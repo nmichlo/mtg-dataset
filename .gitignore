@@ -131,3 +131,4 @@ dmypy.json
 # CUSTOM
 OLD/
 data/
+.idea/
