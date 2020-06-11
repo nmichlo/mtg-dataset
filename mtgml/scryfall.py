@@ -5,8 +5,9 @@ import torchvision
 import ijson as ijson
 from cachier import cachier
 import os
-import mtgml.inout
-from mtgml.proxy import ProxyDownloader
+from tqdm import tqdm
+import mtgml.util.inout
+from mtgml.util.proxy import ProxyDownloader
 
 
 # ========================================================================= #
@@ -16,7 +17,7 @@ from mtgml.proxy import ProxyDownloader
 # get from environment
 if 'DATASETS_ROOT' not in os.environ:
     DATASET_ROOT = './data/datasets'
-    print(f'[WARNING]: DATASETS_ROOT environment variable not set! Defaulting to: {DATASET_ROOT}')
+    tqdm.write(f'[WARNING]: DATASETS_ROOT environment variable not set! Defaulting to: {DATASET_ROOT}')
 else:
     DATASET_ROOT = os.environ['DATASETS_ROOT']
 
@@ -53,8 +54,8 @@ class ScryfallAPI(object):
 
     @staticmethod
     def get(endpoint):
-        print('[Scryfall]:', endpoint)
-        return mtgml.inout.get_json(os.path.join(f'https://api.scryfall.com', endpoint))['data']
+        tqdm.write(f'[Scryfall]: {endpoint}')
+        return mtgml.util.inout.get_json(os.path.join(f'https://api.scryfall.com', endpoint))['data']
 
     @staticmethod
     @cachier(stale_after=CACHE_TIME, cache_dir=CACHIER_DIR)
@@ -68,7 +69,7 @@ class ScryfallAPI(object):
         assert bulk_type in bulk_info, f"Invalid {bulk_type=}, must be one of: {list(bulk_info.keys())}"
         # download bulk data if needed
         download_uri = bulk_info[bulk_type]['download_uri']
-        path = mtgml.inout.smart_download(download_uri, folder=BULK_FOLDER, overwrite=overwrite)
+        path = mtgml.util.inout.smart_download(download_uri, folder=BULK_FOLDER, overwrite=overwrite)
         # open json efficiently - these files are large!!!
         with open(path, 'rb') as f:
             for item in ijson.items(f, 'item'):  # item is behavior keyword for ijson
@@ -86,7 +87,7 @@ class ScryfallAPI(object):
             # ie. the card_faces must be checked for these.
             if 'image_uris' not in card:
                 if 'card_faces' not in card:
-                    print('[SKIPPED] no image:', card)
+                    tqdm.write(f'[SKIPPED] no image: {card}')
                     continue
                 for i, face in enumerate(card['card_faces']):
                     yield SimpleNamespace(
@@ -135,12 +136,8 @@ class ScryfallDataset(torchvision.datasets.ImageFolder):
     @staticmethod
     # @cachier(stale_after=CACHE_TIME, cache_dir=CACHIER_DIR)
     def _get_missing(img_type, bulk_type, root_dir, existing):
-        # existing = set(existing)
-
         url_file_tuples = []
-        for face in ScryfallAPI.card_face_info_iter(img_type=img_type, bulk_type=bulk_type):
-            # if face.image_file in existing:
-            #     continue
+        for face in tqdm(ScryfallAPI.card_face_info_iter(img_type=img_type, bulk_type=bulk_type), desc='Loading Image Info'):
             url_file_tuples.append((face.image_uri, os.path.join(root_dir, face.image_file)))
 
         assert len(url_file_tuples) == len(set(url_file_tuples))

@@ -34,11 +34,11 @@ def smart_download(url, file=None, folder=None, overwrite=False):
     # check path
     path = os.path.join(folder, file)
     if os.path.exists(path) and not overwrite:
-        print('SKIPPING:', path)
+        tqdm.write(f'[SKIPPED] exists: {path}')
         return path
     # mkdirs
     if not os.path.exists(folder):
-        print('MAKING:', folder)
+        tqdm.write('[MADE]:', folder)
         os.makedirs(folder, exist_ok=True)
     # download
     direct_download(url, path)
@@ -52,9 +52,9 @@ def get_json(url):
         response.raise_for_status()
         return response.json()
     except requests.HTTPError as http_err:
-        print(f'HTTP error occurred: {http_err}')
+        tqdm.write(f'HTTP error occurred: {http_err}')
     except Exception as err:
-        print(f'Other error occurred: {err}')
+        tqdm.write(f'Other error occurred: {err}')
 
 
 # ========================================================================= #
