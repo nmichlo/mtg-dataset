@@ -74,6 +74,7 @@ class ScryfallAPI(object):
         with open(path, 'rb') as f:
             for item in ijson.items(f, 'item'):  # item is behavior keyword for ijson
                 yield item
+
     @staticmethod
     def card_face_info_iter(img_type='small', bulk_type='default_cards', overwrite=False):
         # check image type
@@ -111,14 +112,19 @@ class ScryfallDataset(torchvision.datasets.ImageFolder):
 
     def __init__(self, transform=None, img_type='small', bulk_type='default_cards', force_update=False):
         root_dir = os.path.join(SCRYFALL_FOLDER, bulk_type, img_type)
-        img_ext = ScryfallAPI.IMG_TYPES[img_type]
 
-        url_file_tuples = ScryfallDataset._get_missing(
-            img_type=img_type,
-            bulk_type=bulk_type,
-            root_dir=root_dir,
-            existing=tuple(os.path.relpath(path, root_dir) for path in glob(os.path.join(root_dir, f'./**/*.{img_ext}')))
-        )
+        # get url_file tuple information
+        # TODO: wont properly recheck bulk, will only regenerate list of files
+        url_file_tuples = ScryfallDataset._get_tuples(img_type=img_type, bulk_type=bulk_type, overwrite_cache=force_update)
+
+        # get existing files without root, ie. <set>/<uuid>.<ext>
+        # much faster than using os.path.relpath
+        # TODO: maybe glob is just slow?
+        img_ext = ScryfallAPI.IMG_TYPES[img_type]
+        strip_len = len(root_dir.rstrip('/') + '/')
+        existing = set(path[strip_len:] for path in glob(os.path.join(root_dir, f'*/*.{img_ext}')))
+        # filter files that need downloading
+        url_file_tuples = [(u, os.path.join(root_dir, f)) for u, f in url_file_tuples if f not in existing]
 
         # download missing images
         if url_file_tuples:
@@ -128,17 +134,18 @@ class ScryfallDataset(torchvision.datasets.ImageFolder):
 
         # initialise dataset
         super().__init__(root_dir, transform=transform, target_transform=None, is_valid_file=None)
+        tqdm.write(f'[INITIALISED]: Scryfall {bulk_type=} {img_type=}')
 
     def __getitem__(self, index):
         # dont return the label
         return super(ScryfallDataset, self).__getitem__(index)[0]
 
     @staticmethod
-    # @cachier(stale_after=CACHE_TIME, cache_dir=CACHIER_DIR)
-    def _get_missing(img_type, bulk_type, root_dir, existing):
+    @cachier(stale_after=CACHE_TIME, cache_dir=CACHIER_DIR)
+    def _get_tuples(img_type, bulk_type):
         url_file_tuples = []
         for face in tqdm(ScryfallAPI.card_face_info_iter(img_type=img_type, bulk_type=bulk_type), desc='Loading Image Info'):
-            url_file_tuples.append((face.image_uri, os.path.join(root_dir, face.image_file)))
+            url_file_tuples.append((face.image_uri, face.image_file))
 
         assert len(url_file_tuples) == len(set(url_file_tuples))
         assert len(url_file_tuples) == len(set(file for url, file in url_file_tuples))
