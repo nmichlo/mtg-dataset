@@ -48,11 +48,11 @@ class ScryfallAPI(object):
 
     IMG_SHAPES = {
         'small':       (204,  146, 3),
+        'border_crop': (680,  480, 3),
         'normal':      (680,  488, 3),
         'large':       (936,  672, 3),
         'png':         (1040, 745, 3),
         'art_crop':    None,
-        'border_crop': (680,  480, 3),
     }
 
     @staticmethod
@@ -65,7 +65,7 @@ class ScryfallAPI(object):
     def get_bulk_info(data_root=None):
         from cachier import cachier
 
-        @cachier(stale_after=CACHE_STALE_AFTER, cache_dir=_data_dir(data_root=data_root, relative_path='cache'))
+        @cachier(stale_after=CACHE_STALE_AFTER, cache_dir=_data_dir(data_root=data_root, relative_path='cache/scryfall'))
         def _get_bulk_info():
             return {data['type']: data for data in ScryfallAPI.api_download('bulk-data')}
 
@@ -87,7 +87,7 @@ class ScryfallAPI(object):
                 yield item
 
     @staticmethod
-    def card_face_info_iter(img_type='small', bulk_type='default_cards', overwrite=False):
+    def card_face_info_iter(img_type='small', bulk_type='default_cards', overwrite=False, data_root=None):
         from types import SimpleNamespace
         # check image type
         assert img_type in ScryfallAPI.IMG_TYPES, f'Invalid image type {img_type=}, must be one of: {list(ScryfallAPI.IMG_TYPES.keys())}'
@@ -95,7 +95,7 @@ class ScryfallAPI(object):
         # count number of skips
         count, skips = 0, 0
         # yield faces
-        for card in ScryfallAPI.bulk_iter(bulk_type=bulk_type, overwrite=overwrite):
+        for card in ScryfallAPI.bulk_iter(bulk_type=bulk_type, overwrite=overwrite, data_root=data_root):
             count += 1
             # skip cards with placeholder or missing images
             if card['image_status'] not in ('lowres', 'highres_scan'):
@@ -142,7 +142,10 @@ class ScryfallAPI(object):
 
 class ScryfallDataset(ImageFolder):
 
-    def __init__(self, transform=None, img_type='small', bulk_type='default_cards', data_root: Optional[str] = None, force_update=False, download_threads: int = 64):
+    IMG_SHAPES = ScryfallAPI.IMG_SHAPES
+    IMG_TYPES = ScryfallAPI.IMG_TYPES
+
+    def __init__(self, transform=None, img_type='small', bulk_type='default_cards', resize_incorrect=True, data_root: Optional[str] = None, force_update=False, download_threads: int = 64):
         self._img_type = img_type
         self._bulk_type = bulk_type
         # download missing files
@@ -151,13 +154,14 @@ class ScryfallDataset(ImageFolder):
         super().__init__(self.data_dir, transform=None, target_transform=None, is_valid_file=None)
         # override transform function
         self.__transform = transform
+        self.__resize_incorrect = resize_incorrect
 
     def __getitem__(self, idx):
         img, label = super(ScryfallDataset, self).__getitem__(idx)
         # make sure the item is the right size
-        if img.size != self.img_size_pil:
-            logger.warning(f'image at index: {idx} is incorrectly sized: {img.size} resizing to: {self.img_size_pil}')
-            img = img.resize(self.img_size_pil)
+        if self.__resize_incorrect:
+            if img.size != self.img_size_pil:
+                img = img.resize(self.img_size_pil)
         # transform if required
         if self.__transform is not None:
             img = self.__transform(img)
@@ -174,7 +178,7 @@ class ScryfallDataset(ImageFolder):
 
     @property
     def img_shape(self) -> Tuple[int, int, int]:
-        return ScryfallAPI.IMG_SHAPES[self._img_type]
+        return self.IMG_SHAPES[self._img_type]
 
     @property
     def img_size_pil(self) -> Tuple[int, int]:
@@ -188,13 +192,13 @@ class ScryfallDataset(ImageFolder):
     def _get_tuples(img_type: str, bulk_type: str, data_root=None, force_update: bool = False):
         from cachier import cachier
 
-        @cachier(stale_after=CACHE_STALE_AFTER, cache_dir=_data_dir(data_root=data_root, relative_path='cache'))
+        @cachier(stale_after=CACHE_STALE_AFTER, cache_dir=_data_dir(data_root=data_root, relative_path='cache/scryfall'))
         def __get_tuples(img_type, bulk_type):
             from collections import Counter
             from tqdm import tqdm
             # get all card information
             url_file_tuples = []
-            for face in tqdm(ScryfallAPI.card_face_info_iter(img_type=img_type, bulk_type=bulk_type), desc='Loading Image Info'):
+            for face in tqdm(ScryfallAPI.card_face_info_iter(img_type=img_type, bulk_type=bulk_type, data_root=data_root), desc='Loading Image Info'):
                 url_file_tuples.append((face.image_uri, face.image_file))
             # get duplicated
             uf_counts = {k: count for k, count in Counter(url_file_tuples).items() if (count > 1)}
@@ -218,7 +222,7 @@ class ScryfallDataset(ImageFolder):
         data_dir = _data_dir(data_root=data_root, relative_path=os.path.join('scryfall', bulk_type, img_type))
         proxy_dir = _data_dir(data_root=data_root, relative_path=os.path.join('cache/proxy'))
         # get url_file tuple information
-        url_file_tuples = ScryfallDataset._get_tuples(img_type=img_type, bulk_type=bulk_type, force_update=force_update)  # TODO: wont properly recheck bulk, will only regenerate list of files
+        url_file_tuples = ScryfallDataset._get_tuples(img_type=img_type, bulk_type=bulk_type, force_update=force_update, data_root=data_root)  # TODO: wont properly recheck bulk, will only regenerate list of files
         # get existing files without root, ie. "<set>/<uuid>.<ext>"
         img_ext = ScryfallAPI.IMG_TYPES[img_type]
         strip_len = len(data_dir.rstrip('/') + '/')
@@ -233,65 +237,6 @@ class ScryfallDataset(ImageFolder):
                 raise FileNotFoundError(f'Failed to download {len(failed)} card images')
         # return
         return data_dir
-
-
-# ========================================================================= #
-# RESAVE                                                                    #
-# ========================================================================= #
-
-
-# def resave_dataset(data: ScryfallDataset, batch_size=64, num_workers=os.cpu_count()//2):
-#     with h5py.File(f'data/mtg-{data.bulk_type}-{data.img_type}.h5', 'w', libver='earliest') as f:
-#         # create new dataset
-#         d = f.create_dataset(
-#             name='data', shape=data.shape, dtype='uint8',
-#             chunks=(1, *data.img_shape), compression='gzip', compression_opts=4,
-#             # non-deterministic time stamps are added to the file if this is not
-#             # disabled, resulting in different hash sums when the file is re-generated!
-#             # https://github.com/h5py/h5py/issues/225
-#             track_times=False,
-#         )
-#         # dataloader
-#         dataloader = DataLoader(data, batch_size=batch_size, num_workers=num_workers, shuffle=False, drop_last=False)
-#         # save data
-#         with tqdm(total=len(data)) as p:
-#             for i, batch in enumerate(dataloader):
-#                 d[i*batch_size:(i+1)*batch_size] = batch
-#                 p.update(len(batch))
-#
-#
-# def make_dataset(mode: str, resize=None):
-#     bulk_type, img_type = MODES[mode]
-#
-#     def transform(img):
-#         # resize
-#         if resize is not None:
-#             img = img.resize(resize)
-#         # convert to numpy
-#         img = np.array(img)
-#         assert img.shape == data.img_shape
-#         assert img.dtype == 'uint8'
-#         # return values
-#         return img
-#
-#     data = ScryfallDataset(
-#         transform=transform,
-#         bulk_type=bulk_type,
-#         img_type=img_type,
-#     )
-#
-#     return data
-#
-# sane modes that won't use too much disk space
-# MODES = {
-#     'all_small': ('all_cards', 'small'),  # ~243280 cards ~3GB
-#     'default_small': ('default_cards', 'small'),          # ~60459 cards ~0.75GB
-#     'default_normal': ('default_cards', 'normal'),        # ~60459 cards
-#     'default_cropped': ('default_cards', 'border_crop'),  # ~60459 cards
-# }
-#
-#
-# MODE = 'default_cropped'
 
 
 # ========================================================================= #
