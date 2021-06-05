@@ -228,7 +228,7 @@ def _skip_or_prepare_file(file: str, exists_mode: str, make_dirs: bool):
             # the parent path does not exist
             if make_dirs:
                 os.makedirs(parent_dir, exist_ok=True)
-                logger.info(f'[MADE] directory: {parent_dir}')
+                logger.debug(f'[MADE] directory: {parent_dir}')
             else:
                 raise FileNotFoundError(f'Parent directory does not exist: {parent_dir} Otherwise set make_dirs=True')
         else:

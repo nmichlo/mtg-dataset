@@ -1,6 +1,12 @@
 import os
+from logging import getLogger
+
 import requests
 from tqdm import tqdm
+
+
+logger = getLogger(__name__)
+
 
 # ========================================================================= #
 # io                                                                        #
@@ -35,11 +41,11 @@ def smart_download(url, file=None, folder=None, overwrite=False):
     # check path
     path = os.path.join(folder, file)
     if os.path.exists(path) and not overwrite:
-        tqdm.write(f'[SKIPPED] exists: {path}')
+        logger.debug(f'[SKIPPED] skipped existing: {path}')
         return path
     # mkdirs
     if not os.path.exists(folder):
-        tqdm.write(f'[MADE]: {folder}')
+        logger.debug(f'[MADE] made parent folder: {folder}')
         os.makedirs(folder, exist_ok=True)
     # download
     direct_download(url, path)
@@ -49,14 +55,9 @@ def smart_download(url, file=None, folder=None, overwrite=False):
 
 # TODO: merge with proxy
 def get_json(url):
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        return response.json()
-    except requests.HTTPError as http_err:
-        tqdm.write(f'HTTP error occurred: {http_err}')
-    except Exception as err:
-        tqdm.write(f'Other error occurred: {err}')
+    response = requests.get(url)
+    response.raise_for_status()
+    return response.json()
 
 
 # ========================================================================= #
