@@ -1,0 +1,6 @@
+# mtgml
+torchvision
+ijson
+cachier
+requests
+tqdm

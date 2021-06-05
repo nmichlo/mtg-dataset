@@ -38,7 +38,7 @@ def smart_download(url, file=None, folder=None, overwrite=False):
         return path
     # mkdirs
     if not os.path.exists(folder):
-        tqdm.write('[MADE]:', folder)
+        tqdm.write(f'[MADE]: {folder}')
         os.makedirs(folder, exist_ok=True)
     # download
     direct_download(url, path)

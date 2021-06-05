@@ -21,6 +21,7 @@
 #  SOFTWARE.
 
 import functools
+
 from tqdm import tqdm
 import json
 import time
@@ -31,11 +32,16 @@ import os
 import urllib.request
 from multiprocessing.pool import ThreadPool
 
+
 # ============================================================================ #
 # Proxy Downloader                                                             #
 # ============================================================================ #
 
+
 class ProxyDownloader:
+    # TODO: split proxy scraping and proxy downloading
+    # TODO: update to use cachier
+
     def __init__(
             self,
             cache_folder,
@@ -49,7 +55,8 @@ class ProxyDownloader:
             check_proxies=False,
             days=10,
             file_name="proxies.json",
-            logger=tqdm.write
+            logger=tqdm.write,
+            proxy_scrape_fn=None,
     ):
         self.default_threads = default_threads
         self.default_attempts = default_attempts
@@ -70,6 +77,9 @@ class ProxyDownloader:
 
         if not os.path.exists(cache_folder):
             os.makedirs(cache_folder)
+
+        # proxy scrape fn
+        self._proxy_scrape_fn = _scrape_proxies_freeproxieslists if (proxy_scrape_fn is None) else proxy_scrape_fn
 
         if not os.path.isfile(file) or force_scrape:
             self.logger(f"Updating proxies file: {file}")
@@ -94,41 +104,13 @@ class ProxyDownloader:
         return self.proxies[index]
 
     def _scrape_and_dump(self, file, time_ms):
-        proxies = self._download_morph_proxies()
+        proxies = self._proxy_scrape_fn(self.proxy_type)
         if self._check_proxies:
             proxies = self._get_good_proxies(proxies)
         with open(file, "w") as file_stream:
             json.dump({"created": time_ms, "proxies": proxies}, file_stream)
         self.logger(f"Saved: {len(proxies)} proxies to: {file}")
         return proxies
-
-    def _download_morph_proxies(self, morph_api_key=None):
-        morph_api_url = "https://api.morph.io/CookieMichal/us-proxy/data.json"
-
-        if morph_api_key is None:
-            assert 'MORPH_API_KEY' in os.environ, 'MORPH_API_KEY environment variable not set!'
-            morph_api_key = os.environ['MORPH_API_KEY']
-
-        query = f"select * from 'data' where (anonymity='elite proxy' or anonymity='anonymous')"
-
-        if 'https' == self.proxy_type:
-            query += " and https='yes'"
-        elif 'http' == self.proxy_type:
-            query += " and https='no'"
-
-        r = requests.get(morph_api_url, params={
-            'key': morph_api_key,
-            'query': query
-        })
-
-        proxies = []
-        for row in r.json():
-            proto = 'HTTPS' if row['https'] == 'yes' else 'HTTP'
-            url = "{}://{}:{}".format(proto, row['ip'], row['port'])
-            proxies.append({proto: url})
-
-        return proxies
-        # return proxies
 
     def _get_good_proxies(self, proxies, check_url='https://api.scryfall.com'):
         def is_good_proxy(proxy):
@@ -234,3 +216,96 @@ class ProxyDownloader:
 
         self.logger(f"[FAILED] tries={self.default_attempts}: {file} | {url}")
         return url, file
+
+
+# ============================================================================ #
+# Proxy Scrapers                                                               #
+# ============================================================================ #
+
+
+def _scrape_proxies_morph(proxy_type):
+
+    assert 'MORPH_API_KEY' in os.environ, 'MORPH_API_KEY environment variable not set!'
+    morph_api_key = os.environ['MORPH_API_KEY']
+    morph_api_url = "https://api.morph.io/CookieMichal/us-proxy/data.json"
+
+    query = f"select * from 'data' where (anonymity='elite proxy' or anonymity='anonymous')"
+
+    if 'https' == proxy_type:
+        query += " and https='yes'"
+    elif 'http' == proxy_type:
+        query += " and https='no'"
+    elif 'both' == proxy_type:
+        pass
+    else:
+        raise KeyError(f'invalid proxy_type: {proxy_type}')
+
+    r = requests.get(
+        morph_api_url, params={
+            'key': morph_api_key,
+            'query': query
+        }
+    )
+
+    proxies = []
+    for row in r.json():
+        proto = 'HTTPS' if row['https'] == 'yes' else 'HTTP'
+        url = "{}://{}:{}".format(proto, row['ip'], row['port'])
+        proxies.append({proto: url})
+
+    return proxies
+
+
+def _scrape_proxies_freeproxieslists(proxy_type):
+    def can_add(https):
+        if proxy_type == 'both':
+            return True
+        elif proxy_type == 'https':
+            return https == 'yes'
+        elif proxy_type == 'http':
+            return https == 'no'
+        else:
+            raise KeyError(f'invalid proxy_type: {proxy_type}')
+
+    from bs4 import BeautifulSoup
+    page = _fetch_page_content('https://free-proxy-list.net/')
+    soup = BeautifulSoup(page.content, 'html.parser')
+    rows = soup.find_all('tr', recursive=True)
+
+    proxies = []
+    for row in rows:
+        try:
+            ip, port, country, country_long, anonymity, google, https, last_checked = (elem.text for elem in row.find_all('td', recursive=True))
+            # check this entry is an ip entry
+            if len(ip.split('.')) != 4:
+                raise ValueError('not an ip entry')
+            # filter entries
+            if not can_add(https):
+                continue
+            # make entry
+            proto = 'HTTPS' if (https == 'yes') else 'HTTP'
+            url = "{}://{}:{}".format(proto, ip, int(port))
+            proxies.append({proto: url})
+        except:
+            pass
+
+    return proxies
+
+
+def _fetch_page_content(url):
+    print(f'fetching: {url}')
+    # fake a request from a browser
+    return requests.get(url, headers={
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36'
+    })
+
+
+if __name__ == '__main__':
+    ProxyDownloader('data/proxy')
+
+
+# ============================================================================ #
+# Helper                                                                       #
+# ============================================================================ #
+
+
