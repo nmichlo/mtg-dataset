@@ -1,9 +1,15 @@
+import json
 import os
+from logging import getLogger
 
 import numpy as np
 from tqdm import tqdm
 
+from mtgml.scryfall import ScryfallAPI
 from mtgml.scryfall import ScryfallDataset
+
+
+logger = getLogger(__name__)
 
 
 # ========================================================================= #
@@ -56,7 +62,7 @@ def make_dataset(bulk_type: str, img_type: str, resize=None, transpose=True, dat
     return data
 
 
-def resave_dataset(data: ScryfallDataset, suffix='', batch_size=64, num_workers=os.cpu_count(), img_shape=None, overwrite=False):
+def resave_dataset(data: ScryfallDataset, suffix='', batch_size=64, num_workers=os.cpu_count(), img_shape=None, overwrite=False, compression_lvl=4):
     """
     Re-save the given Scryfall dataset as an HDF5 file.
     - the hdf5 file will have the key `data`
@@ -72,6 +78,7 @@ def resave_dataset(data: ScryfallDataset, suffix='', batch_size=64, num_workers=
     # skip if exists
     if not overwrite:
         if os.path.exists(path):
+            logger.info(f'dataset already exists and overwriting is not enabled, skipping: {path}')
             return path
     # open file
     with h5py.File(path, 'w', libver='earliest') as f:
@@ -82,7 +89,7 @@ def resave_dataset(data: ScryfallDataset, suffix='', batch_size=64, num_workers=
             dtype='uint8',
             chunks=(1, *img_shape),
             compression='gzip',
-            compression_opts=4,
+            compression_opts=compression_lvl,
             # non-deterministic time stamps are added to the file if this is not
             # disabled, resulting in different hash sums when the file is re-generated!
             # https://github.com/h5py/h5py/issues/225
@@ -142,7 +149,7 @@ if __name__ == '__main__':
     import argparse
     import logging
     from mtgml.scryfall import _data_dir
-    from mtgml.util.hdf5 import PickleH5pyFile
+    from mtgml.util.hdf5 import H5pyDataset
 
     # parse arguments
     parser = argparse.ArgumentParser()
@@ -160,6 +167,8 @@ if __name__ == '__main__':
     parser.add_argument('--no-test', action='store_false')
     parser.add_argument('--suffix', type=str, default='')
     parser.add_argument('--overwrite', action='store_true')
+    parser.add_argument('--compression-lvl', type=int, default=9)
+    parser.add_argument('--skip-cards-list', action='store_true')
     args = parser.parse_args()
 
     # update args
@@ -199,10 +208,33 @@ if __name__ == '__main__':
         num_workers=args.num_workers,
         img_shape=(3, args.height, args.width) if args.channels_first else (args.height, args.width, 3),
         overwrite=args.overwrite,
+        compression_lvl=args.compression_lvl,
     )
 
     # test the datasets
     if not args.no_test:
-        _hdat = PickleH5pyFile(_path, 'data')
+        _hdat = H5pyDataset(_path, 'data')
+        # make sure the length is the same!
+        assert len(_hdat) == len(_data)
+        # test!
         for i in tqdm(range(1500), desc='inp test'): item = _data[i]
         for i in tqdm(range(10000), desc='out test'): item = _hdat[i]
+
+    # save cards lists
+    if not args.skip_cards_list:
+        cards_path = f'{_path}.cards-list.json'
+        # check exists
+        if os.path.exists(cards_path) and not args.overwrite:
+            logger.warning(f'cards list already exists, overwriting not enabled, skipping: {cards_path}')
+        else:
+            card_info = tqdm(ScryfallAPI.card_face_info_iter(img_type=args.img_type, bulk_type=args.bulk_type, data_root=args.data_root), desc='Loading Cards List')
+            card_info = [info.__dict__ for info in card_info]
+            # make sure the length is the same!
+            assert len(card_info) == len(_data)
+            # save!
+            with open(cards_path, 'w') as f:
+                json.dump(card_info, f, sort_keys=False)
+            logger.info(f'saved card info: {cards_path}')
+
+    # TODO: also copy and rename bulk data
+    #       -- so we can access original data and attributes

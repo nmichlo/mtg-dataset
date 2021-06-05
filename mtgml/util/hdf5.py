@@ -1,4 +1,5 @@
 import h5py
+from torch.utils.data import Dataset
 
 
 # ========================================================================= #
@@ -7,7 +8,7 @@ import h5py
 # ========================================================================= #
 
 
-class PickleH5pyFile(object):
+class H5pyDataset(Dataset):
     """
     This class supports pickling and unpickling of a read-only
     SWMR h5py file and corresponding dataset.
@@ -15,10 +16,11 @@ class PickleH5pyFile(object):
     WARNING: this should probably not be used across multiple hosts?
     """
 
-    def __init__(self, h5_path: str, h5_dataset_name: str):
+    def __init__(self, h5_path: str, h5_dataset_name: str, transform=None):
         self._h5_path = h5_path
         self._h5_dataset_name = h5_dataset_name
         self._hdf5_file, self._hdf5_data = self._make_hdf5()
+        self._transform = transform
 
     def _make_hdf5(self):
         # TODO: can this cause a memory leak if it is never closed?
@@ -27,13 +29,16 @@ class PickleH5pyFile(object):
         return hdf5_file, hdf5_data
 
     def __iter__(self):
-        yield from self._hdf5_data
+        yield from (self[i] for i in range(len(self._hdf5_data)))
 
     def __len__(self):
         return self._hdf5_data.shape[0]
 
     def __getitem__(self, item):
-        return self._hdf5_data[item]
+        elem = self._hdf5_data[item]
+        if self._transform is not None:
+            elem = self._transform(elem)
+        return elem
 
     @property
     def shape(self):

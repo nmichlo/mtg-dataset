@@ -72,7 +72,7 @@ class ScryfallAPI(object):
         return _get_bulk_info()
 
     @staticmethod
-    def bulk_iter(bulk_type='default_cards', data_root=None, overwrite=False):
+    def bulk_iter(bulk_type='default_cards', data_root=None, overwrite=False, bulk_info=True):
         import ijson
         from mtgml.util.inout import smart_download
         # query information
@@ -81,10 +81,14 @@ class ScryfallAPI(object):
         # download bulk data if needed
         download_uri = bulk_info[bulk_type]['download_uri']
         path = smart_download(download_uri, folder=_data_dir(data_root, 'scryfall/bulk'), overwrite=overwrite)
+        bulk_name = os.path.basename(path)
         # open json efficiently - these files are large!!!
         with open(path, 'rb') as f:
-            for item in ijson.items(f, 'item'):  # item is behavior keyword for ijson
-                yield item
+            for bulk_idx, item in enumerate(ijson.items(f, 'item')):  # item is behavior keyword for ijson
+                if bulk_info:
+                    yield bulk_idx, bulk_name, item
+                else:
+                    yield item
 
     @staticmethod
     def card_face_info_iter(img_type='small', bulk_type='default_cards', overwrite=False, data_root=None):
@@ -95,7 +99,7 @@ class ScryfallAPI(object):
         # count number of skips
         count, skips = 0, 0
         # yield faces
-        for card in ScryfallAPI.bulk_iter(bulk_type=bulk_type, overwrite=overwrite, data_root=data_root):
+        for bulk_idx, bulk_name, card in ScryfallAPI.bulk_iter(bulk_type=bulk_type, overwrite=overwrite, data_root=data_root):
             count += 1
             # skip cards with placeholder or missing images
             if card['image_status'] not in ('lowres', 'highres_scan'):
@@ -119,7 +123,8 @@ class ScryfallAPI(object):
                         name=face['name'],
                         image_uri=face['image_uris'][img_type],
                         image_file=os.path.join(card['set'], f"{card['id']}_{i}.{img_ext}"),
-                        image_size=ScryfallAPI.IMG_SHAPES[img_type],
+                        bulk_idx=bulk_idx,
+                        bulk_name=bulk_name,
                     )
             else:
                 yield SimpleNamespace(
@@ -128,7 +133,8 @@ class ScryfallAPI(object):
                     name=card['name'],
                     image_uri=card['image_uris'][img_type],
                     image_file=os.path.join(card['set'], f"{card['id']}.{img_ext}"),
-                    image_size=ScryfallAPI.IMG_SHAPES[img_type],
+                    bulk_idx=bulk_idx,
+                    bulk_name=bulk_name,
                 )
         # done iterating over cards
         if skips > 0:

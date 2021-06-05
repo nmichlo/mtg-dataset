@@ -132,3 +132,4 @@ dmypy.json
 OLD/
 data/
 .idea/
+/lightning_logs/
