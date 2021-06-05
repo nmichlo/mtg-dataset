@@ -23,6 +23,7 @@ def direct_download(url, path):
         # atomic
         os.rename(path_temp, path)
 
+
 # TODO: merge with proxy
 def smart_download(url, file=None, folder=None, overwrite=False):
     # get names
@@ -44,6 +45,7 @@ def smart_download(url, file=None, folder=None, overwrite=False):
     direct_download(url, path)
     # return path to file
     return path
+
 
 # TODO: merge with proxy
 def get_json(url):
