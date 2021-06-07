@@ -143,8 +143,8 @@ class ScryfallAPI(object):
                 for i, face in enumerate(card['card_faces']):
                     yield SimpleNamespace(
                         id=card['id'],
-                        set=card['set'],
                         name=face['name'],
+                        set=card['set'],
                         image_uri=face['image_uris'][img_type],
                         image_file=os.path.join(card['set'], f"{card['id']}_{i}.{img_ext}"),
                         bulk_idx=bulk_idx,
@@ -153,8 +153,8 @@ class ScryfallAPI(object):
             else:
                 yield SimpleNamespace(
                     id=card['id'],
-                    set=card['set'],
                     name=card['name'],
+                    set=card['set'],
                     image_uri=card['image_uris'][img_type],
                     image_file=os.path.join(card['set'], f"{card['id']}.{img_ext}"),
                     bulk_idx=bulk_idx,

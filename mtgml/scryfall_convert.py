@@ -252,7 +252,8 @@ if __name__ == '__main__':
             logger.warning(f'cards list already exists, overwriting not enabled, skipping: {cards_path}')
         else:
             card_info = tqdm(ScryfallAPI.card_face_info_iter(img_type=args.img_type, bulk_type=args.bulk_type, data_root=args.data_root), desc='Loading Cards List')
-            card_info = [info.__dict__ for info in card_info]
+            card_info = sorted(card_info, key=lambda x: x.image_file)
+            card_info = [{'idx': i, **info.__dict__} for i, info in enumerate(card_info)]
             # make sure the length is the same!
             assert len(card_info) == len(_data)
             # save!
