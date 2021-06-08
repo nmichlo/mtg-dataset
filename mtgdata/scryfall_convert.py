@@ -182,7 +182,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # these should match scryfall.py
     parser.add_argument('-b', '--bulk_type', type=str, default='default_cards')            # SEE: https://scryfall.com/docs/api/bulk-data
-    parser.add_argument('-i', '--img-type', type=str, default='normal')                    # SEE: https://scryfall.com/docs/api/images
+    parser.add_argument('-i', '--img-type', type=str, default='border_crop')               # SEE: https://scryfall.com/docs/api/images
     parser.add_argument('-d', '--data-root', type=str, default=_data_dir(None, None))      # download and cache directory location
     parser.add_argument('-f', '--force-download', action='store_true')                     # overwrite existing files and ignore caches
     parser.add_argument('-t', '--download_threads', type=int, default=os.cpu_count() * 2)  # number of threads to use when downloading files

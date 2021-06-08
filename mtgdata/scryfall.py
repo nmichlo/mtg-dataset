@@ -74,11 +74,11 @@ class ScryfallAPI(object):
 
     IMG_TYPES = {
         'small':       'jpg',
+        'border_crop': 'jpg',
         'normal':      'jpg',
         'large':       'jpg',
         'png':         'png',
         'art_crop':    'jpg',
-        'border_crop': 'jpg',
     }
 
     IMG_SHAPES = {
@@ -145,7 +145,7 @@ class ScryfallAPI(object):
         )
 
     @classmethod
-    def card_face_info_iter(cls, img_type='small', bulk_type='default_cards', overwrite=False, data_root=None):
+    def card_face_info_iter(cls, img_type='border_crop', bulk_type='default_cards', overwrite=False, data_root=None):
         # check image type
         assert img_type in cls.IMG_TYPES, f'Invalid image type {img_type=}, must be one of: {list(ScryfallAPI.IMG_TYPES.keys())}'
         # count number of skips
@@ -187,7 +187,7 @@ class ScryfallDataset(ImageFolder):
     IMG_SHAPES = ScryfallAPI.IMG_SHAPES
     IMG_TYPES = ScryfallAPI.IMG_TYPES
 
-    def __init__(self, transform=None, img_type='small', bulk_type='default_cards', resize_incorrect=True, data_root: Optional[str] = None, force_update=False, download_threads: int = 64):
+    def __init__(self, transform=None, img_type='border_crop', bulk_type='default_cards', resize_incorrect=True, data_root: Optional[str] = None, force_update=False, download_threads: int = 64):
         self._img_type = img_type
         self._bulk_type = bulk_type
         # download missing files
@@ -287,7 +287,7 @@ if __name__ == '__main__':
     # parse arguments
     parser = argparse.ArgumentParser()
     parser.add_argument('-b', '--bulk_type', type=str, default='default_cards')            # SEE: https://scryfall.com/docs/api/bulk-data
-    parser.add_argument('-i', '--img-type', type=str, default='normal')                    # SEE: https://scryfall.com/docs/api/images
+    parser.add_argument('-i', '--img-type', type=str, default='border_crop')               # SEE: https://scryfall.com/docs/api/images
     parser.add_argument('-d', '--data-root', type=str, default=_data_dir(None, None))      # download and cache directory location
     parser.add_argument('-f', '--force-download', action='store_true')                     # overwrite existing files and ignore caches
     parser.add_argument('-t', '--download_threads', type=int, default=os.cpu_count() * 2)  # number of threads to use when downloading files
