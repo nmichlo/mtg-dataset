@@ -1,6 +1,16 @@
 # mtgml
 torchvision
 ijson
+tqdm
+numpy
+
+# IO
 cachier
 requests
-tqdm
+
+# scrape
+bs4
+
+# convert
+h5py
+torch

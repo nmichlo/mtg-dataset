@@ -26,6 +26,7 @@ import json
 import os
 from logging import getLogger
 
+import h5py
 import numpy as np
 from tqdm import tqdm
 
@@ -91,8 +92,10 @@ def resave_dataset(data: ScryfallDataset, suffix='', batch_size=64, num_workers=
     Re-save the given Scryfall dataset as an HDF5 file.
     - the hdf5 file will have the key `data`
     """
-    import h5py
-    from torch.utils.data import DataLoader
+    try:
+        from torch.utils.data import DataLoader
+    except:
+        raise ImportError('please install pytorch if you wish to convert the dataset.')
     # defaults
     if suffix is None:
         suffix = ''
@@ -178,21 +181,21 @@ if __name__ == '__main__':
     # parse arguments
     parser = argparse.ArgumentParser()
     # these should match scryfall.py
-    parser.add_argument('-b', '--bulk_type', type=str, default='default_cards')
-    parser.add_argument('-i', '--img-type', type=str, default='normal')
-    parser.add_argument('-d', '--data-root', type=str, default=_data_dir(None, None))
-    parser.add_argument('-f', '--force-download', action='store_true')
-    parser.add_argument('-t', '--download_threads', type=int, default=os.cpu_count() * 2)
+    parser.add_argument('-b', '--bulk_type', type=str, default='default_cards')            # SEE: https://scryfall.com/docs/api/bulk-data
+    parser.add_argument('-i', '--img-type', type=str, default='normal')                    # SEE: https://scryfall.com/docs/api/images
+    parser.add_argument('-d', '--data-root', type=str, default=_data_dir(None, None))      # download and cache directory location
+    parser.add_argument('-f', '--force-download', action='store_true')                     # overwrite existing files and ignore caches
+    parser.add_argument('-t', '--download_threads', type=int, default=os.cpu_count() * 2)  # number of threads to use when downloading files
     # extra args
-    parser.add_argument('-s', '--size', type=str, default='224x160')
-    parser.add_argument('-c', '--channels-first', action='store_true')
-    parser.add_argument('--num-workers', type=int, default=os.cpu_count())
-    parser.add_argument('--batch-size', type=int, default=128)
-    parser.add_argument('--no-test', action='store_false')
-    parser.add_argument('--suffix', type=str, default='')
-    parser.add_argument('--overwrite', action='store_true')
-    parser.add_argument('--compression-lvl', type=int, default=9)
-    parser.add_argument('--skip-cards-list', action='store_true')
+    parser.add_argument('-s', '--size', type=str, default='224x160')        # resized image shape: HEIGHT x WIDTH
+    parser.add_argument('-c', '--channels-first', action='store_true')      # if specified saves image channels first with the shape: (C, H, W) instead of: (H, W, C)
+    parser.add_argument('--num-workers', type=int, default=os.cpu_count())  # number of workers to use when processing the dataset
+    parser.add_argument('--batch-size', type=int, default=128)              # number of images to load in every batch when processing the dataset
+    parser.add_argument('--no-test', action='store_false')                  # if specified, disabled testing the before and after dataset speeds
+    parser.add_argument('--suffix', type=str, default='')                   # string to add to the end of the file name
+    parser.add_argument('--overwrite', action='store_true')                 # overwrite existing generated dataset files
+    parser.add_argument('--compression-lvl', type=int, default=9)           # the compression level of the h5py file (0 to 9)
+    parser.add_argument('--skip-cards-list', action='store_true')           # do not generate or overwrite the cards list
     args = parser.parse_args()
 
     # update args

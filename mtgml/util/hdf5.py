@@ -22,8 +22,18 @@
 #  SOFTWARE.
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 
-import h5py
-from torch.utils.data import Dataset
+try:
+    import h5py
+except:
+    raise ImportError('h5py is not installed')
+
+# torch is optional
+try:
+    from torch.utils.data import Dataset as _Dataset
+except:
+    import warnings
+    warnings.warn('torch is not installed, H5pyDataset will not be an instance of torch.utils.data.Dataset')
+    _Dataset = object
 
 
 # ========================================================================= #
@@ -32,7 +42,7 @@ from torch.utils.data import Dataset
 # ========================================================================= #
 
 
-class H5pyDataset(Dataset):
+class H5pyDataset(_Dataset):
     """
     This class supports pickling and unpickling of a read-only
     SWMR h5py file and corresponding dataset.
@@ -63,6 +73,11 @@ class H5pyDataset(Dataset):
         if self._transform is not None:
             elem = self._transform(elem)
         return elem
+
+    def numpy(self):
+        if self._transform is not None:
+            warnings.warn('Transform is not applied to the data when load() is called.')
+        return self._hdf5_data[:]
 
     @property
     def shape(self):

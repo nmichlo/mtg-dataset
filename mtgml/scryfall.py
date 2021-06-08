@@ -23,13 +23,23 @@
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 
 import os
+from collections import Counter
 from datetime import timedelta
+from glob import glob
 from logging import getLogger
 from types import SimpleNamespace
 from typing import Optional
 from typing import Tuple
 
+import ijson
+from cachier import cachier
 from torchvision.datasets import ImageFolder
+from tqdm import tqdm
+
+from mtgml.util.inout import get_json
+from mtgml.util.inout import smart_download
+from mtgml.util.proxy import ProxyDownloader
+from mtgml.util.proxy import scrape_proxies
 
 
 logger = getLogger(__name__)
@@ -72,6 +82,7 @@ class ScryfallAPI(object):
     }
 
     IMG_SHAPES = {
+        # aspect ratio ~= 7:5 (H = 1.4 W)
         'small':       (204,  146, 3),
         'border_crop': (680,  480, 3),
         'normal':      (680,  488, 3),
@@ -82,14 +93,11 @@ class ScryfallAPI(object):
 
     @classmethod
     def api_download(cls, endpoint):
-        from mtgml.util.inout import get_json
         logger.info(f'[Scryfall]: {endpoint}')
         return get_json(os.path.join(f'https://api.scryfall.com', endpoint))['data']
 
     @classmethod
     def get_bulk_info(cls, data_root=None):
-        from cachier import cachier
-
         @cachier(stale_after=CACHE_STALE_AFTER, cache_dir=_data_dir(data_root=data_root, relative_path='cache/scryfall'))
         def _get_bulk_info():
             return {data['type']: data for data in cls.api_download('bulk-data')}
@@ -98,8 +106,6 @@ class ScryfallAPI(object):
 
     @classmethod
     def bulk_iter(cls, bulk_type='default_cards', data_root=None, overwrite=False, return_bulk_info=True):
-        import ijson
-        from mtgml.util.inout import smart_download
         # query information
         bulk_info = cls.get_bulk_info(data_root=data_root)
         assert bulk_type in bulk_info, f"Invalid {bulk_type=}, must be one of: {list(bulk_info.keys())}"
@@ -226,12 +232,9 @@ class ScryfallDataset(ImageFolder):
 
     @staticmethod
     def _get_tuples(img_type: str, bulk_type: str, data_root=None, force_update: bool = False):
-        from cachier import cachier
 
         @cachier(stale_after=CACHE_STALE_AFTER, cache_dir=_data_dir(data_root=data_root, relative_path='cache/scryfall'))
-        def __get_tuples(img_type, bulk_type):
-            from collections import Counter
-            from tqdm import tqdm
+        def __get_tuples(img_type: str, bulk_type: str):
             # get all card information
             url_file_tuples = []
             for face in tqdm(ScryfallAPI.card_face_info_iter(img_type=img_type, bulk_type=bulk_type, data_root=data_root), desc='Loading Image Info'):
@@ -251,9 +254,6 @@ class ScryfallDataset(ImageFolder):
 
     @staticmethod
     def _download_missing(data_root: str, img_type: str, bulk_type: str, force_update: bool, download_threads: int = 64, download_attempts: int = 1024, download_timeout: int = 2):
-        from glob import glob
-        from mtgml.util.proxy import ProxyDownloader
-        from mtgml.util.proxy import scrape_proxies
         # get paths
         data_dir = _data_dir(data_root=data_root, relative_path=os.path.join('scryfall', bulk_type, img_type))
         proxy_dir = _data_dir(data_root=data_root, relative_path=os.path.join('cache/proxy'))
@@ -286,11 +286,11 @@ if __name__ == '__main__':
 
     # parse arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument('-b', '--bulk_type', type=str, default='default_cards')
-    parser.add_argument('-i', '--img-type', type=str, default='normal')
-    parser.add_argument('-d', '--data-root', type=str, default=_data_dir(None, None))
-    parser.add_argument('-f', '--force-download', action='store_true')
-    parser.add_argument('-t', '--download_threads', type=int, default=os.cpu_count() * 2)
+    parser.add_argument('-b', '--bulk_type', type=str, default='default_cards')            # SEE: https://scryfall.com/docs/api/bulk-data
+    parser.add_argument('-i', '--img-type', type=str, default='normal')                    # SEE: https://scryfall.com/docs/api/images
+    parser.add_argument('-d', '--data-root', type=str, default=_data_dir(None, None))      # download and cache directory location
+    parser.add_argument('-f', '--force-download', action='store_true')                     # overwrite existing files and ignore caches
+    parser.add_argument('-t', '--download_threads', type=int, default=os.cpu_count() * 2)  # number of threads to use when downloading files
     args = parser.parse_args()
 
     # download the dataset

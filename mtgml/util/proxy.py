@@ -24,21 +24,21 @@
 
 import io
 import os
+import urllib.request
+from collections import defaultdict
 from datetime import timedelta
 from logging import getLogger
+from multiprocessing.pool import ThreadPool
+from random import Random
 from typing import Callable
-
 from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Sequence
 from typing import Tuple
 
-from random import Random
-from collections import defaultdict
-
-import urllib.request
 import requests
+from tqdm import tqdm
 
 
 _LOGGER = getLogger(__name__)
@@ -169,7 +169,11 @@ def _scrape_proxies_freeproxieslist(proxy_type) -> List[Dict[str, str]]:
         else:
             raise KeyError(f'invalid proxy_type: {proxy_type}')
 
-    from bs4 import BeautifulSoup
+    try:
+        from bs4 import BeautifulSoup
+    except:
+        raise ImportError('BeautifulSoup `bs4` is not installed, cannot scrape proxies!')
+
     page = _requests_get('https://free-proxy-list.net/', fake_user_agent=True)
     soup = BeautifulSoup(page.content, 'html.parser')
     rows = soup.find_all('tr', recursive=True)
@@ -328,9 +332,6 @@ class ProxyDownloader:
                 pass  # removed in another thread
 
     def download_threaded(self, url_file_tuples: Sequence[Tuple[str, str]], exists_mode: str = 'error', verbose: bool = False, make_dirs: bool = False, ignore_failures=False, threads=64, attempts: int = 128, timeout: int = 8):
-        from multiprocessing.pool import ThreadPool
-        from tqdm import tqdm
-
         # check inputs
         if len(url_file_tuples) < 0:
             return []
