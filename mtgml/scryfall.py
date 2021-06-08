@@ -25,6 +25,7 @@
 import os
 from datetime import timedelta
 from logging import getLogger
+from types import SimpleNamespace
 from typing import Optional
 from typing import Tuple
 
@@ -79,28 +80,28 @@ class ScryfallAPI(object):
         'art_crop':    None,
     }
 
-    @staticmethod
-    def api_download(endpoint):
+    @classmethod
+    def api_download(cls, endpoint):
         from mtgml.util.inout import get_json
         logger.info(f'[Scryfall]: {endpoint}')
         return get_json(os.path.join(f'https://api.scryfall.com', endpoint))['data']
 
-    @staticmethod
-    def get_bulk_info(data_root=None):
+    @classmethod
+    def get_bulk_info(cls, data_root=None):
         from cachier import cachier
 
         @cachier(stale_after=CACHE_STALE_AFTER, cache_dir=_data_dir(data_root=data_root, relative_path='cache/scryfall'))
         def _get_bulk_info():
-            return {data['type']: data for data in ScryfallAPI.api_download('bulk-data')}
+            return {data['type']: data for data in cls.api_download('bulk-data')}
 
         return _get_bulk_info()
 
-    @staticmethod
-    def bulk_iter(bulk_type='default_cards', data_root=None, overwrite=False, bulk_info=True):
+    @classmethod
+    def bulk_iter(cls, bulk_type='default_cards', data_root=None, overwrite=False, return_bulk_info=True):
         import ijson
         from mtgml.util.inout import smart_download
         # query information
-        bulk_info = ScryfallAPI.get_bulk_info(data_root=data_root)
+        bulk_info = cls.get_bulk_info(data_root=data_root)
         assert bulk_type in bulk_info, f"Invalid {bulk_type=}, must be one of: {list(bulk_info.keys())}"
         # download bulk data if needed
         download_uri = bulk_info[bulk_type]['download_uri']
@@ -109,21 +110,42 @@ class ScryfallAPI(object):
         # open json efficiently - these files are large!!!
         with open(path, 'rb') as f:
             for bulk_idx, item in enumerate(ijson.items(f, 'item')):  # item is behavior keyword for ijson
-                if bulk_info:
-                    yield bulk_idx, bulk_name, item
+                if return_bulk_info:
+                    yield item, (bulk_idx, bulk_name)
                 else:
                     yield item
 
-    @staticmethod
-    def card_face_info_iter(img_type='small', bulk_type='default_cards', overwrite=False, data_root=None):
-        from types import SimpleNamespace
+    @classmethod
+    def _make_face_item(cls, card, img_type: str, bulk_idx: int, bulk_name: str, f_idx: int = None):
+        # handle the case where the card has a face or not
+        if f_idx is None:
+            face = card
+            file_name = f"{card['id']}.{cls.IMG_TYPES[img_type]}"
+        else:
+            face = card['card_faces'][f_idx]
+            file_name = f"{card['id']}_{f_idx}.{cls.IMG_TYPES[img_type]}"
+        # make the object
+        return SimpleNamespace(
+            id=card['id'],
+            oracle_id=card['oracle_id'],
+            name=face['name'],
+            set=card['set'],
+            set_name=card['set_name'],
+            img_uri=face['image_uris'][img_type],
+            img_file=os.path.join(card['set'], file_name),
+            bulk_idx=bulk_idx,
+            bulk_name=bulk_name,
+            face_idx=f_idx,
+        )
+
+    @classmethod
+    def card_face_info_iter(cls, img_type='small', bulk_type='default_cards', overwrite=False, data_root=None):
         # check image type
-        assert img_type in ScryfallAPI.IMG_TYPES, f'Invalid image type {img_type=}, must be one of: {list(ScryfallAPI.IMG_TYPES.keys())}'
-        img_ext = ScryfallAPI.IMG_TYPES[img_type]
+        assert img_type in cls.IMG_TYPES, f'Invalid image type {img_type=}, must be one of: {list(ScryfallAPI.IMG_TYPES.keys())}'
         # count number of skips
         count, skips = 0, 0
         # yield faces
-        for bulk_idx, bulk_name, card in ScryfallAPI.bulk_iter(bulk_type=bulk_type, overwrite=overwrite, data_root=data_root):
+        for card, (bulk_idx, bulk_name) in cls.bulk_iter(bulk_type=bulk_type, overwrite=overwrite, data_root=data_root, return_bulk_info=True):
             count += 1
             # skip cards with placeholder or missing images
             if card['image_status'] not in ('lowres', 'highres_scan'):
@@ -140,26 +162,10 @@ class ScryfallAPI(object):
                     logger.error(f'[SKIPPED] Scryfall error, card with no `image_uris` also has no `card_faces`: {card}')
                     skips += 1
                     continue
-                for i, face in enumerate(card['card_faces']):
-                    yield SimpleNamespace(
-                        id=card['id'],
-                        name=face['name'],
-                        set=card['set'],
-                        image_uri=face['image_uris'][img_type],
-                        image_file=os.path.join(card['set'], f"{card['id']}_{i}.{img_ext}"),
-                        bulk_idx=bulk_idx,
-                        bulk_name=bulk_name,
-                    )
+                for f_idx, _ in enumerate(card['card_faces']):
+                    yield cls._make_face_item(card, img_type=img_type, bulk_idx=bulk_idx, bulk_name=bulk_name, f_idx=f_idx)
             else:
-                yield SimpleNamespace(
-                    id=card['id'],
-                    name=card['name'],
-                    set=card['set'],
-                    image_uri=card['image_uris'][img_type],
-                    image_file=os.path.join(card['set'], f"{card['id']}.{img_ext}"),
-                    bulk_idx=bulk_idx,
-                    bulk_name=bulk_name,
-                )
+                yield cls._make_face_item(card, img_type=img_type, bulk_idx=bulk_idx, bulk_name=bulk_name, f_idx=None)
         # done iterating over cards
         if skips > 0:
             logger.warning(f'[TOTAL SKIPS]: {skips} of {count} cards/faces')
@@ -229,7 +235,7 @@ class ScryfallDataset(ImageFolder):
             # get all card information
             url_file_tuples = []
             for face in tqdm(ScryfallAPI.card_face_info_iter(img_type=img_type, bulk_type=bulk_type, data_root=data_root), desc='Loading Image Info'):
-                url_file_tuples.append((face.image_uri, face.image_file))
+                url_file_tuples.append((face.img_uri, face.img_file))
             # get duplicated
             uf_counts = {k: count for k, count in Counter(url_file_tuples).items() if (count > 1)}
             f_counts  = {k: count for k, count in Counter(file for url, file in url_file_tuples).items() if (count > 1)}

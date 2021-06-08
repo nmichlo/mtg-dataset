@@ -220,6 +220,9 @@ if __name__ == '__main__':
         transpose=args.channels_first,
     )
 
+    # make sure the data is sorted correctly by the path
+    assert _data.samples == sorted(_data.samples, key=lambda x: x[0])
+
     # check sizes
     if (args.height > _data.img_shape[0]) or (args.width > _data.img_shape[1]):
         logging.warning(f'images are being unscaled from input size of: {_data.img_shape[:2]} to: {(args.height, args.width)}')
@@ -227,7 +230,7 @@ if __name__ == '__main__':
     # convert the dataset
     _path = resave_dataset(
         _data,
-        suffix=f'-3x{args.size}{args.suffix}' if args.channels_first else f'-{args.size}x3{args.suffix}',
+        suffix=f'-{len(_data)}x3x{args.size}{args.suffix}' if args.channels_first else f'-{len(_data)}x{args.size}x3{args.suffix}',
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         img_shape=(3, args.height, args.width) if args.channels_first else (args.height, args.width, 3),
@@ -246,16 +249,18 @@ if __name__ == '__main__':
 
     # save cards lists
     if not args.skip_cards_list:
-        cards_path = f'{_path}.cards-list.json'
+        cards_path = f'{_path[:-len(".h5")]}_cards-list.json'
         # check exists
         if os.path.exists(cards_path) and not args.overwrite:
             logger.warning(f'cards list already exists, overwriting not enabled, skipping: {cards_path}')
         else:
             card_info = tqdm(ScryfallAPI.card_face_info_iter(img_type=args.img_type, bulk_type=args.bulk_type, data_root=args.data_root), desc='Loading Cards List')
-            card_info = sorted(card_info, key=lambda x: x.image_file)
+            card_info = sorted(card_info, key=lambda x: x.img_file)
             card_info = [{'idx': i, **info.__dict__} for i, info in enumerate(card_info)]
-            # make sure the length is the same!
+            # check that card_info corresponds to the dataset
+            # and that everything is sorted correctly!
             assert len(card_info) == len(_data)
+            assert [info['img_file'] for info in card_info] == [os.path.join(os.path.basename(os.path.dirname(sample[0])), os.path.basename(sample[0])) for sample in _data.samples]
             # save!
             with open(cards_path, 'w') as f:
                 json.dump(card_info, f, sort_keys=False)
