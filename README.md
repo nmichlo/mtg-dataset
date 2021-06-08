@@ -1,6 +1,23 @@
-# Magic The Gathering - Dataset
 
-## Features
+<p align="center">
+    <h1 align="center">🧙‍♂️ Magic The Gathering ✨<br/>🧚‍♀️ Dataset 🧝‍♀️</h1>
+    <p align="center">
+        With automated multithreaded image downloading,<br/>caching and optional dataset conversion.
+    </p>
+</p>
+
+<br/>
+
+<p align="center">
+    <img align="center" src="mtg-vae.png" width="640"/>
+    <p align="center">
+        <i>Example reconstructions of dataset elements<br/>using a simple <a href="https://github.com/nmichlo/disent">Beta-VAE</a></i>
+    </p>
+</p>
+
+<br/>
+
+## 📋 &nbsp;Features
 
 **MTG Card Face Dataset**
 - Automatically scrape and download card images from [Scryfall](https://scryfall.com)
@@ -18,9 +35,11 @@
 **Pickle HD5F Dataset Class**
 - Load the converted HDF5 dataset from disk from multiple threads / processes
 
-## Download Images
+<br/>
 
-**Command Line**
+## ⬇️ &nbsp;Download Images
+
+### Command Line
 
 You can download all the `normal` quality [images](https://scryfall.com/docs/api/images)
 from the `default` Scryfall [bulk](https://scryfall.com/docs/api/bulk-data) data
@@ -31,18 +50,19 @@ see the argparse arguments at the bottom of the file for more information.
 python3 mtgdata/scryfall
 ```
 
-**Programmatically**
+### Programmatically
 
 Alternatively you can download the images from within python by simply instantiating
 the `mtgdata.ScryfallDataset` object. Similar arguments can be specified as that of the
 command line approach.
 
-```
+```python3
 from mtgdata import ScryfallDataset 
+
 data = ScryfallDataset()
 ```
 
-**Proxy Issues?**
+### Proxy Issues?
 
 The scrape logic used to obtain the proxy list for `mtgdata.utils.proxy.ProxyDownloader` will
 probably go out of date. You can override the *default* scrape logic used by the Dataset download
@@ -61,18 +81,20 @@ def custom_proxy_scraper(proxy_type: str) -> List[Dict[str, str]]:
     # - the value is the matching full url
     return [
         {'HTTP': 'http://<my-http-proxy>.com'},
-        {'HTTPS': 'http://<my-https-proxy>.com'},
+        {'HTTPS': 'https://<my-https-proxy>.com'},
     ]
 ```
 
-## Convert Images to HDF5
+<br/>
+
+## 🔄 &nbsp;Convert Images to an HDF5 Dataset
 
 The images can be convert to hdf5 format by running the file `mtgdata.scryfall_convert`.
 Various arguments can be specified, please see the argparse arguments at the bottom of
 the file for more information.
 
 ```bash
-python3 mtgdata/scryfall_convert
+python3 mtgdata/scryfall_convert.py
 ```
 
 The resulting data file will have the `data` key corresponding to the images data.
