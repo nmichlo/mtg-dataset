@@ -36,8 +36,8 @@ from torch.distributions import Normal
 # ========================================================================= #
 
 
-from examples.nn.helper import Activation
-from examples.nn.helper import NormalDist
+from examples.simple_vae.nn.helper import Activation
+from examples.simple_vae.nn.helper import NormalDist
 
 
 # ========================================================================= #

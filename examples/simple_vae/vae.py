@@ -39,9 +39,9 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
-from examples.nn.kornia import hsv_to_rgb
-from examples.nn.kornia import rgb_to_hsv
-from examples.nn.model_alt import AutoEncoderSkips
+from examples.simple_vae.nn.kornia import hsv_to_rgb
+from examples.simple_vae.nn.kornia import rgb_to_hsv
+from examples.simple_vae.nn.model_alt import AutoEncoderSkips
 from mtgml.util.hdf5 import H5pyDataset
 import wandb
 

@@ -25,10 +25,10 @@
 from typing import Optional
 import torch.nn as nn
 
-from examples.nn.helper import Activation
-from examples.nn.model import BaseAutoEncoder
-from examples.nn.model import ReprDown
-from examples.nn.model import ReprUp
+from examples.simple_vae.nn.helper import Activation
+from examples.simple_vae.nn.model import BaseAutoEncoder
+from examples.simple_vae.nn.model import ReprDown
+from examples.simple_vae.nn.model import ReprUp
 
 
 def SingleConv(in_channels: int, out_channels: int):

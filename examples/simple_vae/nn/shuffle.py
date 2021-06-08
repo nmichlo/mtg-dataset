@@ -28,13 +28,13 @@ import numpy as np
 import torch
 from torch import nn as nn
 
-from examples.nn.helper import Activation
-from examples.nn.model import AutoEncoder
-from examples.nn.helper import Bias
-from examples.nn.model import ConvDown
-from examples.nn.model import ConvUp
-from examples.nn.helper import NormalDist
-from examples.nn.helper import Weight
+from examples.simple_vae.nn.helper import Activation
+from examples.simple_vae.nn.model import AutoEncoder
+from examples.simple_vae.nn.helper import Bias
+from examples.simple_vae.nn.model import ConvDown
+from examples.simple_vae.nn.model import ConvUp
+from examples.simple_vae.nn.helper import NormalDist
+from examples.simple_vae.nn.helper import Weight
 
 
 # ========================================================================= #
