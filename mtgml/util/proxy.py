@@ -26,6 +26,7 @@ import io
 import os
 from datetime import timedelta
 from logging import getLogger
+from typing import Callable
 
 from typing import Dict
 from typing import List
@@ -40,11 +41,75 @@ import urllib.request
 import requests
 
 
-logger = getLogger(__name__)
+_LOGGER = getLogger(__name__)
 
 
 # ============================================================================ #
-# Helper                                                                       #
+# Proxy Scraping                                                               #
+# ============================================================================ #
+
+
+_PROXY_SOURCES = {}
+_DEFAULT_SOURCE = None
+
+
+def set_default_proxy_scraper(name: str):
+    if name not in _PROXY_SOURCES:
+        raise KeyError(f'Cannot set as default! Scrape function with name: {repr(name)} does not exist.')
+    global _DEFAULT_SOURCE
+    if _DEFAULT_SOURCE != name:
+        _LOGGER.info(f'overridden default proxy scrape_fn: {repr(_DEFAULT_SOURCE)} -> {repr(name)}')
+        _DEFAULT_SOURCE = name
+
+
+def register_proxy_scraper(name: str, scrape_fn: Optional[Callable[[str], List[Dict[str, str]]]] = None, is_default: bool = False):
+    if name in _PROXY_SOURCES:
+        raise KeyError('scrape function with name: {repr(name)} already exists')
+    # decorator
+    def wrapper(scrape_fn: Callable[[str], List[Dict[str, str]]]):
+        # just in case the decorator call was delayed
+        assert name not in _PROXY_SOURCES
+        _PROXY_SOURCES.setdefault(name, scrape_fn)
+        _LOGGER.debug(f'registered proxy scrape_fn: {repr(name)}')
+        # set the default
+        if is_default:
+            set_default_proxy_scraper(name=name)
+    # decorator or function
+    if scrape_fn is None:
+        return wrapper
+    else:
+        wrapper(scrape_fn)
+
+
+def scrape_proxies(source: Optional[str] = None, proxy_type: str = 'all', cache_dir: str = 'data/proxies/cachier', cached: bool = True) -> List[Dict[str, str]]:
+    if source is None:
+        if _DEFAULT_SOURCE is None:
+            raise RuntimeError('no default proxy scrape function has been set.')
+        source = _DEFAULT_SOURCE
+        _LOGGER.info(f'using default proxy scrape function: {repr(source)}')
+    # get source
+    try:
+        proxy_scrape_fn = _PROXY_SOURCES[source]
+    except KeyError:
+        raise KeyError(f'proxy scrape function with name: {repr(source)} does not exist. Valid scrape sources are: {sorted(_PROXY_SOURCES.keys())}')
+    # wrap the function
+    if cached:
+        from cachier import cachier
+        proxy_scrape_fn = cachier(
+            stale_after=timedelta(days=1),
+            backend='pickle',
+            cache_dir=cache_dir
+        )(proxy_scrape_fn)
+    # obtain the proxies
+    _LOGGER.info(f'scraping proxies from source: {repr(source)}')
+    proxy_list = proxy_scrape_fn(proxy_type=proxy_type)
+    _LOGGER.info(f'scrapped: {len(proxy_list)} proxies from source: {repr(source)}')
+    # done!
+    return proxy_list
+
+
+# ============================================================================ #
+# Proxy Scrapers                                                               #
 # ============================================================================ #
 
 
@@ -57,11 +122,7 @@ def _requests_get(url, fake_user_agent=True, params=None):
     )
 
 
-# ============================================================================ #
-# Proxy Scrapers                                                               #
-# ============================================================================ #
-
-
+@register_proxy_scraper('morph.io')
 def _scrape_proxies_morph(proxy_type) -> List[Dict[str, str]]:
 
     assert 'MORPH_API_KEY' in os.environ, 'MORPH_API_KEY environment variable not set!'
@@ -96,6 +157,7 @@ def _scrape_proxies_morph(proxy_type) -> List[Dict[str, str]]:
     return proxies
 
 
+@register_proxy_scraper('free-proxy-list.net', is_default=True)
 def _scrape_proxies_freeproxieslist(proxy_type) -> List[Dict[str, str]]:
     def can_add(https):
         if proxy_type == 'all':
@@ -131,29 +193,6 @@ def _scrape_proxies_freeproxieslist(proxy_type) -> List[Dict[str, str]]:
 
     return proxies
 
-
-_PROXY_SOURCES = {
-    'morph.io': _scrape_proxies_morph,
-    'free-proxy-list.net': _scrape_proxies_freeproxieslist,
-}
-
-
-def scrape_proxies(proxy_type='all', source='free-proxy-list.net', cache_dir='data/proxies/cachier', cached=True) -> List[Dict[str, str]]:
-    proxy_scrape_fn = _PROXY_SOURCES[source]
-    # wrap the function
-    if cached:
-        from cachier import cachier
-        proxy_scrape_fn = cachier(
-            stale_after=timedelta(days=1),
-            backend='pickle',
-            cache_dir=cache_dir
-        )(proxy_scrape_fn)
-    # obtain the proxies
-    logger.info(f'scraping proxies from source: {repr(source)}')
-    proxy_list = proxy_scrape_fn(proxy_type=proxy_type)
-    logger.info(f'scrapped: {len(proxy_list)} proxies from source: {repr(source)}')
-    # done!
-    return proxy_list
 
 # ============================================================================ #
 # Proxy Errors                                                                 #
@@ -219,7 +258,7 @@ def _skip_or_prepare_file(file: str, exists_mode: str, make_dirs: bool):
             return True
         elif exists_mode == 'overwrite':
             os.unlink(file)
-            logger.warning('overwriting file: {url}')
+            _LOGGER.warning('overwriting file: {url}')
         else:
             raise KeyError(f'invalid exists_mode={repr(exists_mode)}')
     else:
@@ -230,7 +269,7 @@ def _skip_or_prepare_file(file: str, exists_mode: str, make_dirs: bool):
             # the parent path does not exist
             if make_dirs:
                 os.makedirs(parent_dir, exist_ok=True)
-                logger.debug(f'[MADE] directory: {parent_dir}')
+                _LOGGER.debug(f'[MADE] directory: {parent_dir}')
             else:
                 raise FileNotFoundError(f'Parent directory does not exist: {parent_dir} Otherwise set make_dirs=True')
         else:
@@ -249,20 +288,22 @@ class ProxyDownloader:
 
     def __init__(
         self,
-        proxies: Sequence[Dict[str, str]],
+        proxies: Optional[Sequence[Dict[str, str]]],
         req_min_remove_count=5,
         req_max_fail_ratio=0.5,
     ):
-        # TODO: add support for raw proxy strings?
-        self._proxies = list(proxies)
+        # default proxy scraping
+        if proxies is None:
+            proxies = scrape_proxies()
+        # convert
+        self._proxies = list(proxies)  # TODO: add support for raw proxy strings?
         # proxy statistics
         self._req_counts = defaultdict(int)
         self._req_fails = defaultdict(int)
         self._req_max_fail_ratio = req_max_fail_ratio
         self._req_min_remove_count = req_min_remove_count
         # random instance
-        # TODO: add round robbin mode?
-        self._rand = Random()
+        self._rand = Random()  # TODO: add round robbin mode?
 
     def random_proxy(self) -> Dict[str, str]:
         if len(self._proxies) <= 0:
@@ -330,7 +371,7 @@ class ProxyDownloader:
         """
         if _skip_or_prepare_file(file=file, exists_mode=exists_mode, make_dirs=make_dirs):
             if verbose:
-                logger.debug(f"[SKIPPED]: {file} | {url}")
+                _LOGGER.debug(f"[SKIPPED]: {file} | {url}")
             return
         # attempt download
         for i in range(attempts):
@@ -338,15 +379,20 @@ class ProxyDownloader:
             try:
                 download_with_proxy(url, file, proxy=proxy, timeout=timeout)
                 if verbose:
-                    logger.info(f"[DOWNLOADED]: {file} | {url}")
+                    _LOGGER.info(f"[DOWNLOADED]: {file} | {url}")
                 self._update_proxy(proxy, success=True)
                 return
             except Exception as e:
                 if verbose:
-                    logger.debug(f"[FAILED ATTEMPT {i+1}]: {file} | {url} -- {e}")
+                    _LOGGER.debug(f"[FAILED ATTEMPT {i + 1}]: {file} | {url} -- {e}")
                 self._update_proxy(proxy, success=False)
         # download failed
         raise ProxyDownloadFailedError(f"[FAILED] tries={attempts}: {file} | {url}")
+
+
+# ============================================================================ #
+# Entrypoint                                                                   #
+# ============================================================================ #
 
 
 if __name__ == '__main__':
@@ -357,7 +403,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', '--cache-dir', type=str, default='data/cache/proxies')
     parser.add_argument('-t', '--proxy-type', type=str, default='all')
-    parser.add_argument('-s', '--proxy-source', type=str, default='free-proxy-list.net')
+    parser.add_argument('-s', '--proxy-source', type=str, default=None)
     parser.add_argument('-f', '--force-download', action='store_true')
     args = parser.parse_args()
 
@@ -374,7 +420,7 @@ if __name__ == '__main__':
 
 
 # ============================================================================ #
-# Helper                                                                       #
+# END                                                                          #
 # ============================================================================ #
 
 
