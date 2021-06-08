@@ -36,10 +36,10 @@ from cachier import cachier
 from torchvision.datasets import ImageFolder
 from tqdm import tqdm
 
-from mtgml.util.inout import get_json
-from mtgml.util.inout import smart_download
-from mtgml.util.proxy import ProxyDownloader
-from mtgml.util.proxy import scrape_proxies
+from mtgdata.util.inout import get_json
+from mtgdata.util.inout import smart_download
+from mtgdata.util.proxy import ProxyDownloader
+from mtgdata.util.proxy import scrape_proxies
 
 
 logger = getLogger(__name__)

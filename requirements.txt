@@ -1,4 +1,4 @@
-# mtgml
+# mtgdata
 torchvision
 ijson
 tqdm

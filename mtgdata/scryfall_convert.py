@@ -30,8 +30,8 @@ import h5py
 import numpy as np
 from tqdm import tqdm
 
-from mtgml.scryfall import ScryfallAPI
-from mtgml.scryfall import ScryfallDataset
+from mtgdata.scryfall import ScryfallAPI
+from mtgdata.scryfall import ScryfallDataset
 
 
 logger = getLogger(__name__)
@@ -175,8 +175,8 @@ SANE_MODES = {
 if __name__ == '__main__':
     import argparse
     import logging
-    from mtgml.scryfall import _data_dir
-    from mtgml.util.hdf5 import H5pyDataset
+    from mtgdata.scryfall import _data_dir
+    from mtgdata.util.hdf5 import H5pyDataset
 
     # parse arguments
     parser = argparse.ArgumentParser()
