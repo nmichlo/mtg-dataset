@@ -1,8 +1,8 @@
 # mtgdata
-torchvision
 ijson
 tqdm
 numpy
+torchvision
 
 # IO
 cachier

@@ -22,18 +22,8 @@
 #  SOFTWARE.
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 
-try:
-    import h5py
-except:
-    raise ImportError('h5py is not installed')
-
-# torch is optional
-try:
-    from torch.utils.data import Dataset as _Dataset
-except:
-    import warnings
-    warnings.warn('torch is not installed, Hdf5Dataset will not be an instance of torch.utils.data.Dataset')
-    _Dataset = object
+import h5py
+from torch.utils.data import Dataset as Dataset
 
 
 # ========================================================================= #
@@ -42,7 +32,7 @@ except:
 # ========================================================================= #
 
 
-class Hdf5Dataset(_Dataset):
+class Hdf5Dataset(Dataset):
     """
     This class supports pickling and unpickling of a read-only
     SWMR h5py file and corresponding dataset.
