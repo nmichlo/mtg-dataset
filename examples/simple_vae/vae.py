@@ -28,18 +28,17 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
-from disent.visualize.visualize_util import make_image_grid
 from disent.nn.functional import torch_conv2d_channel_wise, torch_conv2d_channel_wise_fft, get_kernel_size
-from matplotlib import pyplot as plt
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.utilities.types import STEP_OUTPUT
 from torch import nn
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
-from examples.simple_vae.nn.kornia import hsv_to_rgb
+from examples.common import ToTensor
+from examples.common import VisualiseCallback
+
 from examples.simple_vae.nn.kornia import rgb_to_hsv
 from examples.simple_vae.nn.model_alt import AutoEncoderSkips
 from mtgml.util.hdf5 import H5pyDataset
@@ -128,68 +127,6 @@ class SpatialFreqMseLoss(nn.Module):
         loss_orig = F.mse_loss(x, target, reduction=reduction)
         loss_freq = F.mse_loss(x_conv, t_conv, reduction=reduction)
         return (loss_orig + loss_freq) / 2
-
-
-# ========================================================================= #
-# Helper                                                                    #
-# ========================================================================= #
-
-
-class ToTensor(object):
-    def __init__(self, move_channels=True, to_hsv=False):
-        self._move_channels = move_channels
-        self._to_hsv = to_hsv
-
-    def __call__(self, img):
-        if self._move_channels:
-            img = np.moveaxis(img, -1, -3)
-        img = img.astype('float32') / 255
-        img = torch.from_numpy(img)
-        if self._to_hsv:
-            img = rgb_to_hsv(img, scale_h=False)
-        return img
-
-
-class VisualiseCallback(pl.Callback):
-
-    def __init__(self, every_n_steps=1000, use_wandb=False, is_hsv=False):
-        self._count = 0
-        self._every_n_steps = every_n_steps
-        self._wandb = use_wandb
-        self._is_hsv = is_hsv
-
-    def on_train_batch_end(self, trainer: 'pl.Trainer', pl_module: 'pl.LightningModule', outputs: STEP_OUTPUT, batch: torch.Tensor, batch_idx: int, dataloader_idx: int) -> None:
-        self._count += 1
-        # skip
-        if self._count % self._every_n_steps != 0:
-            return
-        # feed forward
-        with torch.no_grad():
-            # generate images
-            data = trainer.train_dataloader.dataset.datasets
-            xs = torch.stack([data[i] for i in [3466, 18757, 20000, 40000, 22038, 20541, 1100]])
-            rs = pl_module.forward(xs.to(pl_module.device), deterministic=True)
-            # clip images
-            xs = torch.clip(xs, 0, 1)
-            rs = torch.clip(rs, 0, 1)
-            # convert from hsv
-            if self._is_hsv:
-                xs = hsv_to_rgb(xs, scale_h=False)
-                rs = hsv_to_rgb(rs, scale_h=False)
-            # convert to uint8
-            xs = torch.moveaxis(torch.clip(xs * 255, 0, 255).to(torch.uint8).detach().cpu(), 1, -1).numpy()
-            rs = torch.moveaxis(torch.clip(rs * 255, 0, 255).to(torch.uint8).detach().cpu(), 1, -1).numpy()
-            # make grid
-            img = make_image_grid(np.concatenate([xs, rs]), num_cols=len(xs), pad=4)
-        # plot
-        if self._wandb:
-            wandb.log({'mtg-recons': wandb.Image(img)})
-        else:
-            fig, ax = plt.subplots()
-            ax.imshow(img)
-            ax.set_axis_off()
-            fig.tight_layout()
-            plt.show()
 
 
 # ========================================================================= #

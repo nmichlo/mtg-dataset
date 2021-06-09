@@ -2,20 +2,23 @@
 FROM: https://github.com/nocotan/pytorch-lightning-gans/blob/master/models/dcgan.py
 """
 import os
-from argparse import ArgumentParser, Namespace
 from collections import OrderedDict
+from datetime import datetime
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
+from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.core import LightningModule
+from pytorch_lightning.loggers import WandbLogger
 from torch.utils.data import DataLoader
 from torchvision.datasets import MNIST
 
-from pytorch_lightning.core import LightningModule
-from pytorch_lightning.trainer import Trainer
+from examples.common import ToTensor
+from examples.common import VisualiseCallback
+from mtgdata.util import H5pyDataset
 
 
 class Generator(nn.Module):
@@ -24,7 +27,7 @@ class Generator(nn.Module):
         self.img_shape = img_shape
 
         self.init_size = img_shape[1] // 4
-        self.l1 = nn.Sequential(nn.Linear(latent_dim, 128 * self.init_size ** 2))
+        self.l1 = nn.Sequential(nn.Linear(latent_dim, 128 * self.init_size**2))
 
         self.conv_blocks = nn.Sequential(
             nn.BatchNorm2d(128),
@@ -65,8 +68,8 @@ class Discriminator(nn.Module):
         )
 
         # The height and width of downsampled image
-        ds_size = img_shape[1] // 2 ** 4
-        self.adv_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, 1), nn.Sigmoid())
+        ds_size = img_shape[1] // 2**4
+        self.adv_layer = nn.Sequential(nn.Linear(128 * ds_size**2, 1), nn.Sigmoid())
 
     def forward(self, img):
         out = self.model(img)
@@ -78,12 +81,14 @@ class Discriminator(nn.Module):
 
 class DCGAN(LightningModule):
 
-    def __init__(self,
-                 latent_dim: int = 100,
-                 lr: float = 0.0002,
-                 b1: float = 0.5,
-                 b2: float = 0.999,
-                 batch_size: int = 64, **kwargs):
+    def __init__(
+        self,
+        latent_dim: int = 100,
+        lr: float = 0.0002,
+        b1: float = 0.5,
+        b2: float = 0.999,
+        batch_size: int = 64, **kwargs
+    ):
         super().__init__()
         self.save_hyperparameters()
 
@@ -134,11 +139,13 @@ class DCGAN(LightningModule):
             # adversarial loss is binary cross-entropy
             g_loss = self.adversarial_loss(self.discriminator(self(z)), valid)
             tqdm_dict = {'g_loss': g_loss}
-            output = OrderedDict({
-                'loss': g_loss,
-                'progress_bar': tqdm_dict,
-                'log': tqdm_dict
-            })
+            output = OrderedDict(
+                {
+                    'loss': g_loss,
+                    'progress_bar': tqdm_dict,
+                    'log': tqdm_dict
+                }
+            )
             return output
 
         # train discriminator
@@ -156,16 +163,19 @@ class DCGAN(LightningModule):
             fake = fake.type_as(imgs)
 
             fake_loss = self.adversarial_loss(
-                self.discriminator(self(z).detach()), fake)
+                self.discriminator(self(z).detach()), fake
+            )
 
             # discriminator loss is the average of these
             d_loss = (real_loss + fake_loss) / 2
             tqdm_dict = {'d_loss': d_loss}
-            output = OrderedDict({
-                'loss': d_loss,
-                'progress_bar': tqdm_dict,
-                'log': tqdm_dict
-            })
+            output = OrderedDict(
+                {
+                    'loss': d_loss,
+                    'progress_bar': tqdm_dict,
+                    'log': tqdm_dict
+                }
+            )
             return output
 
     def configure_optimizers(self):
@@ -178,11 +188,13 @@ class DCGAN(LightningModule):
         return [opt_g, opt_d], []
 
     def train_dataloader(self):
-        transform = transforms.Compose([
-            transforms.Resize((32, 32)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
-        ])
+        transform = transforms.Compose(
+            [
+                transforms.Resize((32, 32)),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+        )
 
         dataset = MNIST(os.getcwd(), train=True, download=True, transform=transform)
         return DataLoader(dataset, batch_size=self.batch_size)
@@ -196,37 +208,78 @@ class DCGAN(LightningModule):
         self.logger.experiment.add_image('generated_images', grid, self.current_epoch)
 
 
-def main(args: Namespace) -> None:
-    # ------------------------
-    # 1 INIT LIGHTNING MODEL
-    # ------------------------
-    model = DCGAN(**vars(args))
-
-    # ------------------------
-    # 2 INIT TRAINER
-    # ------------------------
-    # If use distubuted training  PyTorch recommends to use DistributedDataParallel.
-    # See: https://pytorch.org/docs/stable/nn.html#torch.nn.DataParallel
-    trainer = Trainer(gpus=args.gpus)
-
-    # ------------------------
-    # 3 START TRAINING
-    # ------------------------
-    trainer.fit(model)
+# ========================================================================= #
+# RUN                                                                       #
+# ========================================================================= #
 
 
 if __name__ == '__main__':
-    parser = ArgumentParser()
-    parser.add_argument("--gpus", type=int, default=0, help="number of GPUs")
-    parser.add_argument("--batch_size", type=int, default=64, help="size of the batches")
-    parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
-    parser.add_argument("--b1", type=float, default=0.5,
-                        help="adam: decay of first order momentum of gradient")
-    parser.add_argument("--b2", type=float, default=0.999,
-                        help="adam: decay of first order momentum of gradient")
-    parser.add_argument("--latent_dim", type=int, default=100,
-                        help="dimensionality of the latent space")
 
-    hparams = parser.parse_args()
+    def main(use_wandb=False):
 
-    main(hparams)
+        dataloader = DataLoader(
+            dataset=H5pyDataset(
+                h5_path='data/mtg-default_cards-normal-224x160x3.h5',
+                h5_dataset_name='data',
+                transform=ToTensor(move_channels=True),
+            ),
+            num_workers=os.cpu_count(),
+            batch_size=64,
+            shuffle=True,
+        )
+
+        model = MtgSystem(
+            lr=1e-3,
+            beta=0.0001,
+            # model options
+            z_size=1024,
+            repr_hidden_size=None,  # 1536,
+            repr_channels=64,  # 32*5*7 = 1120, 44*5*7 = 1540, 56*5*7 = 1960
+            channel_mul=1.2,
+            channel_start=80,
+            model_all_skips=False,
+            model_smooth_upsample=False,
+            model_smooth_downsample=False,
+            # training options
+            is_vae=True,
+            recon_loss='mse_freq',
+            recon_weight_reduce='obs',
+            recon_weight_mode='distscale2',
+        )
+
+        if use_wandb:
+            print()
+            for k, v in model.hparams.items():
+                setattr(wandb.config, f'model/{k}', v)
+                print(f'model/{k}:', repr(v))
+            print()
+
+        trainer = pl.Trainer(
+            gpus=1,
+            max_epochs=500,
+            # checkpoint_callback=False,
+            logger=WandbLogger(
+                name=f'mtg-gan|{model.hparams.recon_loss}:{model.hparams.recon_weight_reduce}:{model.hparams.recon_weight_mode}',
+                project='MTG'
+            ) if use_wandb else False,
+            callbacks=[
+                VisualiseCallback(every_n_steps=500, use_wandb=use_wandb),
+                ModelCheckpoint(
+                    dirpath=os.path.join('checkp', datetime.datetime.now().strftime('%Y-%m-%d_%H:%M:%S')),
+                    monitor='recon',
+                    every_n_train_steps=2500,
+                    verbose=True,
+                    save_top_k=5,
+                ),
+            ]
+        )
+
+        trainer.fit(model, dataloader)
+
+
+    # RUN
+    main(use_wandb=True)
+
+# ========================================================================= #
+# END                                                                       #
+# ========================================================================= #
