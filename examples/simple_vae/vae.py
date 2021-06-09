@@ -24,6 +24,7 @@
 
 import datetime
 import os
+import warnings
 
 import numpy as np
 import pytorch_lightning as pl
@@ -33,6 +34,7 @@ import wandb
 from disent.nn.functional import get_kernel_size
 from disent.nn.functional import torch_conv2d_channel_wise
 from disent.nn.functional import torch_conv2d_channel_wise_fft
+import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 from torch import nn
@@ -256,6 +258,22 @@ class MtgVaeSystem(pl.LightningModule):
         return loss
 
 
+class WandbContextManagerCallback(pl.Callback):
+
+    def __init__(self, keys_values):
+        self._keys_values = keys_values
+
+    def on_train_start(self, trainer: 'pl.Trainer', pl_module: 'pl.LightningModule') -> None:
+        print()
+        for k, v in self._keys_values.items():
+            setattr(wandb.config, f'model/{k}', v)
+            print(f'model/{k}:', repr(v))
+        print()
+
+    def on_train_end(self, trainer: 'pl.Trainer', pl_module: 'pl.LightningModule') -> None:
+        wandb.finish()
+
+
 # ========================================================================= #
 # RUN                                                                       #
 # ========================================================================= #
@@ -263,12 +281,12 @@ class MtgVaeSystem(pl.LightningModule):
 
 if __name__ == '__main__':
 
-    def main(use_wandb=False):
+    def main(use_wandb: bool, model_skip_mode: str, repr_hidden_size: int):
 
         datamodule = Hdf5DataModule(
             'data/mtg_default-cards_20210608210352_border-crop_60480x224x160x3_c9.h5',
             val_ratio=0,
-            batch_size=64-32,
+            batch_size=24,
         )
 
         system = MtgVaeSystem(
@@ -277,11 +295,11 @@ if __name__ == '__main__':
             beta=0.0001,
             # model options
             z_size=1024,
-            repr_hidden_size=None,  # 1536,
+            repr_hidden_size=repr_hidden_size,  # 1536,
             repr_channels=64,  # 32*5*7 = 1120, 44*5*7 = 1540, 56*5*7 = 1960
             channel_mul=1.2,
             channel_start=80,
-            model_skip_mode='inner',  # all, all_not_end, next_all, next_mid, none
+            model_skip_mode=model_skip_mode,  # all, all_not_end, next_all, next_mid, none
             model_smooth_downsample=True,
             model_smooth_upsample=False,
             # training options
@@ -291,37 +309,48 @@ if __name__ == '__main__':
             recon_weight_mode='none',
         )
 
-        if use_wandb:
-            print()
-            for k, v in system.hparams.items():
-                setattr(wandb.config, f'model/{k}', v)
-                print(f'model/{k}:', repr(v))
-            print()
+        # get wandb stuff!
+        if wandb:
+            wandb_logger = WandbLogger(
+                name=f'TEST:mtg-vae:{system.hparams.model_skip_mode}:{system.hparams.model_smooth_downsample}:{system.hparams.model_smooth_upsample}|{datamodule._batch_size}|{system.hparams.recon_loss}:{system.hparams.recon_weight_reduce}:{system.hparams.recon_weight_mode}',
+                project='MTG',
+                reinit=True
+            )
+            wandb_callbacks = [
+                WandbContextManagerCallback({**system.hparams, 'batch_size': datamodule._batch_size})
+            ]
+        else:
+            wandb_logger, wandb_callbacks = None, []
 
+        # initialise model trainer
         trainer = pl.Trainer(
             gpus=1,
-            max_epochs=500,
+            max_epochs=1,
             # checkpoint_callback=False,
-            logger=WandbLogger(
-                name=f'mtg-vae:{system.hparams.model_skip_mode}:{system.hparams.model_smooth_downsample}:{system.hparams.model_smooth_upsample}|{system.hparams.recon_loss}:{system.hparams.recon_weight_reduce}:{system.hparams.recon_weight_mode}',
-                project='MTG'
-            ) if use_wandb else False,
+            logger=wandb_logger,
             callbacks=[
+                *wandb_callbacks,
                 VisualiseCallback(every_n_steps=500, use_wandb=use_wandb),
-                ModelCheckpoint(
-                    dirpath=os.path.join('checkpoint_border', datetime.datetime.now().strftime('%Y-%m-%d_%H:%M:%S')),
-                    monitor='recon',
-                    every_n_train_steps=2500,
-                    verbose=True,
-                    save_top_k=5,
-                ),
+                # ModelCheckpoint(
+                #     dirpath=os.path.join('checkpoint_border', datetime.datetime.now().strftime('%Y-%m-%d_%H:%M:%S')),
+                #     monitor='recon',
+                #     every_n_train_steps=2500,
+                #     verbose=True,
+                #     save_top_k=5,
+                # ),
             ]
         )
 
+        # start training model
         trainer.fit(system, datamodule)
 
-    # RUN
-    main(use_wandb=True)
+
+    for repr_hidden_size in [None, 1024]:
+        for skip_mode in ['none', 'inner_alt', 'all_not_end', 'next_mid', 'all', 'next_all', 'inner', 'inner_mid']:
+            try:
+                main(True, skip_mode, repr_hidden_size)
+            except Exception as e:
+                warnings.warn(f'[FAILED]: {skip_mode} {repr_hidden_size} : {e}')
 
 
 # ========================================================================= #
