@@ -40,10 +40,13 @@ class ToTensor(object):
 
 class VisualiseCallback(pl.Callback):
 
-    def __init__(self, every_n_steps=1000, use_wandb=False, is_hsv=False):
+    def __init__(self, every_n_steps=1000, log_local=True, log_wandb=False, is_hsv=False, figwidth=15):
         self._count = 0
         self._every_n_steps = every_n_steps
-        self._wandb = use_wandb
+        assert log_wandb or log_local
+        self._wandb = log_wandb
+        self._local = log_local
+        self._figwidth = figwidth
         self._is_hsv = is_hsv
 
     def on_train_batch_end(self, trainer: 'pl.Trainer', pl_module: 'pl.LightningModule', outputs, batch: torch.Tensor, batch_idx: int, dataloader_idx: int) -> None:
@@ -71,8 +74,10 @@ class VisualiseCallback(pl.Callback):
         if self._wandb:
             wandb.log({'mtg-recons': wandb.Image(img)})
             logger.info('logged wandb model visualisation')
-        else:
-            fig, ax = plt.subplots()
+
+        if self._local:
+            w, h = img.shape[:2]
+            fig, ax = plt.subplots(figsize=(self._figwidth/w*h, self._figwidth))
             ax.imshow(img)
             ax.set_axis_off()
             fig.tight_layout()

@@ -68,12 +68,6 @@ class AutoEncoderSkips(BaseAutoEncoder):
                 self.enc3 = ConvDown(in_channels=c(1), out_channels=c(2));          self.act3 = Activation(norm_features=c(2))
                 self.enc4 = ConvDown(in_channels=c(2), out_channels=c(3));          self.act4 = Activation(norm_features=c(3))
                 self.enc5 = ConvDown(in_channels=c(3), out_channels=repr_channels); self.act5 = Activation(norm_features=repr_channels)
-                # skip_connections starting at x0
-                self.s0_1 = nn.Sequential(Pool(kernel_size=2),  SingleConv(3, c(0)))
-                self.s0_2 = nn.Sequential(Pool(kernel_size=4),  SingleConv(3, c(1)))
-                self.s0_3 = nn.Sequential(Pool(kernel_size=8),  SingleConv(3, c(2)))
-                self.s0_4 = nn.Sequential(Pool(kernel_size=16), SingleConv(3, c(3)))
-                self.s0_5 = nn.Sequential(Pool(kernel_size=32), SingleConv(3, repr_channels))
                 # skip_connections starting at x1
                 self.s1_2 = nn.Sequential(Pool(kernel_size=2),  SingleConv(c(0), c(1)))
                 self.s1_3 = nn.Sequential(Pool(kernel_size=4),  SingleConv(c(0), c(2)))
@@ -91,36 +85,12 @@ class AutoEncoderSkips(BaseAutoEncoder):
 
             if skip_mode == 'all':
                 def forward(self, x0):
-                    x1 = self.act1(self.enc1(x0) + self.s0_1(x0))
-                    x2 = self.act2(self.enc2(x1) + self.s0_2(x0) + self.s1_2(x1))
-                    x3 = self.act3(self.enc3(x2) + self.s0_3(x0) + self.s1_3(x1) + self.s2_3(x2))
-                    x4 = self.act4(self.enc4(x3) + self.s0_4(x0) + self.s1_4(x1) + self.s2_4(x2) + self.s3_4(x3))
-                    x5 = self.act5(self.enc5(x4) + self.s0_5(x0) + self.s1_5(x1) + self.s2_5(x2) + self.s3_5(x3) + self.s4_5(x4))
-                    return x5 # TODO: skip connections might be better here
-            elif skip_mode == 'all_not_end':
-                def forward(self, x0):
                     x1 = self.act1(self.enc1(x0))
                     x2 = self.act2(self.enc2(x1) + self.s1_2(x1))
                     x3 = self.act3(self.enc3(x2) + self.s1_3(x1) + self.s2_3(x2))
                     x4 = self.act4(self.enc4(x3) + self.s1_4(x1) + self.s2_4(x2) + self.s3_4(x3))
                     x5 = self.act5(self.enc5(x4) + self.s1_5(x1) + self.s2_5(x2) + self.s3_5(x3) + self.s4_5(x4))
-                    return x5 # TODO: skip connections might be better here
-            elif skip_mode == 'next_all':
-                def forward(self, x0):
-                    x1 = self.act1(self.enc1(x0) + self.s0_1(x0))
-                    x2 = self.act2(self.enc2(x1) + self.s1_2(x1))
-                    x3 = self.act3(self.enc3(x2) + self.s2_3(x2))
-                    x4 = self.act4(self.enc4(x3) + self.s3_4(x3))
-                    x5 = self.act5(self.enc5(x4) + self.s4_5(x4))
                     return x5
-            elif skip_mode == 'next_mid':
-                def forward(self, x0):
-                    x1 = self.act1(self.enc1(x0))
-                    x2 = self.act2(self.enc2(x1))
-                    x3 = self.act3(self.enc3(x2) + self.s1_3(x1))
-                    x4 = self.act4(self.enc4(x3))
-                    x5 = self.act5(self.enc5(x4) + self.s3_5(x3))
-                    return x5 # TODO: skip connections might be better here
             elif skip_mode == 'none':
                 def forward(self, x0):
                     x1 = self.act1(self.enc1(x0))
@@ -128,30 +98,14 @@ class AutoEncoderSkips(BaseAutoEncoder):
                     x3 = self.act3(self.enc3(x2))
                     x4 = self.act4(self.enc4(x3))
                     x5 = self.act5(self.enc5(x4))
-                    return x5 # TODO: skip connections might be better here
+                    return x5
             elif skip_mode == 'inner':
                 def forward(self, x0):
                     x1 = self.act1(self.enc1(x0))
                     x2 = self.act2(self.enc2(x1))
                     x3 = self.act3(self.enc3(x2))
                     x4 = self.act4(self.enc4(x3))
-                    x5 = self.act5(self.enc5(x4) + self.s0_5(x0) + self.s1_5(x1) + self.s2_5(x2) + self.s3_5(x3) + self.s4_5(x4))
-                    return x5 # TODO: skip connections might be better here
-            elif skip_mode == 'inner_mid':
-                def forward(self, x0):
-                    x1 = self.act1(self.enc1(x0))
-                    x2 = self.act2(self.enc2(x1))
-                    x3 = self.act3(self.enc3(x2))
-                    x4 = self.act4(self.enc4(x3))
-                    x5 = self.act5(self.enc5(x4) + self.s1_5(x1) + self.s3_5(x3))
-                    return x5  # TODO: skip connections might be better here
-            elif skip_mode == 'inner_alt':
-                def forward(self, x0):
-                    x1 = self.act1(self.enc1(x0))
-                    x2 = self.act2(self.enc2(x1))
-                    x3 = self.act3(self.enc3(x2))
-                    x4 = self.act4(self.enc4(x3) + self.s0_4(x0) + self.s1_4(x1) + self.s2_4(x2) + self.s3_4(x3))
-                    x5 = self.act5(self.enc5(x4))
+                    x5 = self.act5(self.enc5(x4) + self.s1_5(x1) + self.s2_5(x2) + self.s3_5(x3) + self.s4_5(x4))
                     return x5
 
         Upsampler = nn.UpsamplingBilinear2d if smooth_upsample else nn.UpsamplingNearest2d
@@ -171,21 +125,15 @@ class AutoEncoderSkips(BaseAutoEncoder):
                 self.s0_2 = nn.Sequential(Upsampler(scale_factor=4),  SingleConv(repr_channels, c(2)))
                 self.s0_3 = nn.Sequential(Upsampler(scale_factor=8),  SingleConv(repr_channels, c(1)))
                 self.s0_4 = nn.Sequential(Upsampler(scale_factor=16), SingleConv(repr_channels, c(0)))
-                self.s0_5 = nn.Sequential(Upsampler(scale_factor=32), SingleConv(repr_channels, c(-1)))
                 # skip_connections starting at x1
                 self.s1_2 = nn.Sequential(Upsampler(scale_factor=2),  SingleConv(c(3), c(2)))
                 self.s1_3 = nn.Sequential(Upsampler(scale_factor=4),  SingleConv(c(3), c(1)))
                 self.s1_4 = nn.Sequential(Upsampler(scale_factor=8),  SingleConv(c(3), c(0)))
-                self.s1_5 = nn.Sequential(Upsampler(scale_factor=16), SingleConv(c(3), c(-1)))
                 # skip_connections starting at x2
                 self.s2_3 = nn.Sequential(Upsampler(scale_factor=2), SingleConv(c(2), c(1)))
                 self.s2_4 = nn.Sequential(Upsampler(scale_factor=4), SingleConv(c(2), c(0)))
-                self.s2_5 = nn.Sequential(Upsampler(scale_factor=8), SingleConv(c(2), c(-1)))
                 # skip_connections starting at x3
                 self.s3_4 = nn.Sequential(Upsampler(scale_factor=2), SingleConv(c(1), c(0)))
-                self.s3_5 = nn.Sequential(Upsampler(scale_factor=4), SingleConv(c(1), c(-1)))
-                # skip_connections starting at x4
-                self.s4_5 = nn.Sequential(Upsampler(scale_factor=2), SingleConv(c(0), c(-1)))
 
             if skip_mode == 'all':
                 def forward(self, z0):
@@ -193,31 +141,7 @@ class AutoEncoderSkips(BaseAutoEncoder):
                     z2 = self.act2(self.dec2(z1) + self.s0_2(z0) + self.s1_2(z1))
                     z3 = self.act3(self.dec3(z2) + self.s0_3(z0) + self.s1_3(z1) + self.s2_3(z2))
                     z4 = self.act4(self.dec4(z3) + self.s0_4(z0) + self.s1_4(z1) + self.s2_4(z2) + self.s3_4(z3))
-                    z5 = self.act5(self.dec5(z4) + self.s0_5(z0) + self.s1_5(z1) + self.s2_5(z2) + self.s3_5(z3) + self.s4_5(z4))
-                    return self.out(z5)
-            elif skip_mode == 'all_not_end':
-                def forward(self, z0):
-                    z1 = self.act1(self.dec1(z0) + self.s0_1(z0))
-                    z2 = self.act2(self.dec2(z1) + self.s0_2(z0) + self.s1_2(z1))
-                    z3 = self.act3(self.dec3(z2) + self.s0_3(z0) + self.s1_3(z1) + self.s2_3(z2))
-                    z4 = self.act4(self.dec4(z3) + self.s0_4(z0) + self.s1_4(z1) + self.s2_4(z2) + self.s3_4(z3))
                     z5 = self.act5(self.dec5(z4))
-                    return self.out(z5)
-            elif skip_mode == 'next_all':
-                def forward(self, z0):
-                    z1 = self.act1(self.dec1(z0) + self.s0_1(z0))
-                    z2 = self.act2(self.dec2(z1) + self.s1_2(z1))
-                    z3 = self.act3(self.dec3(z2) + self.s2_3(z2))
-                    z4 = self.act4(self.dec4(z3) + self.s3_4(z3))
-                    z5 = self.act5(self.dec5(z4) + self.s4_5(z4))
-                    return self.out(z5)
-            elif skip_mode == 'next_mid':
-                def forward(self, z0):
-                    z1 = self.act1(self.dec1(z0))
-                    z2 = self.act2(self.dec2(z1))
-                    z3 = self.act3(self.dec3(z2) + self.s1_3(z1))
-                    z4 = self.act4(self.dec4(z3))
-                    z5 = self.act5(self.dec5(z4) + self.s3_5(z3))
                     return self.out(z5)
             elif skip_mode == 'none':
                 def forward(self, z0):
@@ -228,22 +152,6 @@ class AutoEncoderSkips(BaseAutoEncoder):
                     z5 = self.act5(self.dec5(z4))
                     return self.out(z5)
             elif skip_mode == 'inner':
-                def forward(self, z0):
-                    z1 = self.act1(self.dec1(z0))
-                    z2 = self.act2(self.dec2(z1))
-                    z3 = self.act3(self.dec3(z2))
-                    z4 = self.act4(self.dec4(z3))
-                    z5 = self.act5(self.dec5(z4) + self.s0_5(z0) + self.s1_5(z1) + self.s2_5(z2) + self.s3_5(z3) + self.s4_5(z4)) # TODO: THIS SHOULD BE ONE EARLIER?
-                    return self.out(z5)
-            elif skip_mode == 'inner_mid':
-                def forward(self, z0):
-                    z1 = self.act1(self.dec1(z0))
-                    z2 = self.act2(self.dec2(z1))
-                    z3 = self.act3(self.dec3(z2))
-                    z4 = self.act4(self.dec4(z3))
-                    z5 = self.act5(self.dec5(z4) + self.s1_5(z1) + self.s3_5(z3))  # TODO: THIS SHOULD BE ONE EARLIER?
-                    return self.out(z5)
-            elif skip_mode == 'inner_alt':
                 def forward(self, z0):
                     z1 = self.act1(self.dec1(z0))
                     z2 = self.act2(self.dec2(z1))

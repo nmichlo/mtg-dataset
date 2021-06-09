@@ -22,9 +22,10 @@
 #  SOFTWARE.
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 
-import datetime
+import logging
 import os
 import warnings
+import datetime
 
 import numpy as np
 import pytorch_lightning as pl
@@ -34,7 +35,6 @@ import wandb
 from disent.nn.functional import get_kernel_size
 from disent.nn.functional import torch_conv2d_channel_wise
 from disent.nn.functional import torch_conv2d_channel_wise_fft
-import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 from torch import nn
@@ -118,45 +118,45 @@ class LaplaceMseLoss(nn.Module):
 # ========================================================================= #
 
 
-def weight_loss(unreduced_loss, weight_mode: str = 'distscale2'):
-    with torch.no_grad():
-        m = torch.min(unreduced_loss, dim=0, keepdim=True).values
-        M = torch.max(unreduced_loss, dim=0, keepdim=True).values
-        # reduce loss
-        if weight_mode == 'distscale':
-            weights = (unreduced_loss - m) / (M - m)
-        elif weight_mode == 'distscale2':
-            weights = (unreduced_loss - m) / (M - m)
-            weights = weights**2
-        elif weight_mode == 'lenscale':
-            weights = unreduced_loss / M
-        elif weight_mode == 'lenscale2':
-            weights = unreduced_loss / M
-            weights = weights ** 2
-        else:
-            raise KeyError(f'invalid weight_mode: {weight_mode}')
-        # scale weights
-        weights = weights * (len(unreduced_loss) / weights.sum(dim=0, keepdim=True))
-    # scale loss
-    return unreduced_loss * weights
+_REDUCE_DIMS = {
+    'none': None,
+    'chn': (   -3,       ),
+    'pix': (       -2, -1),
+    'obs': (   -3, -2, -1),
+    'bch': (0,           ),
+}
+
+_REDUCE_FNS = {
+    'mean': torch.mean,
+    'var': torch.var,
+    'std': torch.std,
+}
 
 
-def mean_weighted_loss(unreduced_loss, weight_mode: str = 'mean', weight_reduce='obs'):
+def mean_weighted_loss(unreduced_loss, weight_mode: str = 'none', weight_reduce='obs', weight_shift=True, weight_power=1):
+    # exit early
     if weight_mode == 'none':
+        if weight_reduce != 'none':
+            warnings.warn('`weight_reduce` has no effect when `weight_mode` == "none"')
         return unreduced_loss.mean()
-    # observation weighted losses
-    if weight_reduce == 'none':
-        reduced_loss = unreduced_loss
-    elif weight_reduce == 'chn':
-        reduced_loss = unreduced_loss.mean(keepdim=True, dim=(-3,       ))
-    elif weight_reduce == 'pix':
-        reduced_loss = unreduced_loss.mean(keepdim=True, dim=(    -2, -1))
-    elif weight_reduce == 'obs':
-        reduced_loss = unreduced_loss.mean(keepdim=True, dim=(-3, -2, -1))
-    else:
-        raise KeyError(f'invalid weight_reduce: {weight_reduce}')
+    # generate weights
+    with torch.no_grad():
+        reduce_dims = _REDUCE_DIMS[weight_reduce]
+        reduce_fn = _REDUCE_FNS[weight_mode]
+        # get weights
+        if reduce_dims is None:
+            weights = unreduced_loss
+        else:
+            weights = reduce_fn(unreduced_loss, keepdim=True, dim=reduce_dims)
+        # shift
+        if weight_shift:
+            weights = weights - torch.min(weights)
+        if weight_power != 1:
+            weights = weights ** weight_power
+        # normalise weights
+        weights = (weights / weights.mean()).detach()
     # compute version
-    return weight_loss(reduced_loss, weight_mode=weight_mode).mean()
+    return (unreduced_loss * weights).mean()
 
 
 # ========================================================================= #
@@ -192,6 +192,8 @@ class MtgVaeSystem(pl.LightningModule):
         recon_loss='mse',
         recon_weight_reduce='none',
         recon_weight_mode='none',
+        recon_weight_shift=True,
+        recon_weight_power=1,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -243,6 +245,8 @@ class MtgVaeSystem(pl.LightningModule):
             unreduced_loss=self._loss(recon, batch, reduction='none'),
             weight_reduce=self.hparams.recon_weight_reduce,
             weight_mode=self.hparams.recon_weight_mode,
+            weight_shift=self.hparams.recon_weight_shift,
+            weight_power=self.hparams.recon_weight_power,
         )
         # compute kl divergence
         if self.hparams.is_vae:
@@ -252,9 +256,9 @@ class MtgVaeSystem(pl.LightningModule):
         # combined loss
         loss = loss_recon + loss_kl
         # return loss
-        self.log('kl', loss_kl, prog_bar=True)
-        self.log('recon', loss_recon)
-        self.log('loss', loss)
+        self.log('kl',    loss_kl,    on_step=True, prog_bar=True)
+        self.log('recon', loss_recon, on_step=True)
+        self.log('loss',  loss,       on_step=True)
         return loss
 
 
@@ -281,12 +285,12 @@ class WandbContextManagerCallback(pl.Callback):
 
 if __name__ == '__main__':
 
-    def main(use_wandb: bool, model_skip_mode: str, repr_hidden_size: int):
+    def main():
 
         datamodule = Hdf5DataModule(
             'data/mtg_default-cards_20210608210352_border-crop_60480x224x160x3_c9.h5',
             val_ratio=0,
-            batch_size=24,
+            batch_size=48,
         )
 
         system = MtgVaeSystem(
@@ -295,62 +299,50 @@ if __name__ == '__main__':
             beta=0.0001,
             # model options
             z_size=1024,
-            repr_hidden_size=repr_hidden_size,  # 1536,
+            repr_hidden_size=1024,  # 1536,
             repr_channels=64,  # 32*5*7 = 1120, 44*5*7 = 1540, 56*5*7 = 1960
-            channel_mul=1.2,
-            channel_start=80,
-            model_skip_mode=model_skip_mode,  # all, all_not_end, next_all, next_mid, none
+            channel_mul=1.25,
+            channel_start=96,
+            model_skip_mode='inner',  # all, all_not_end, next_all, next_mid, none
             model_smooth_downsample=True,
-            model_smooth_upsample=False,
+            model_smooth_upsample=True,
             # training options
             is_vae=True,
             recon_loss='mse_laplace',
-            recon_weight_reduce='mean',
             recon_weight_mode='none',
+            recon_weight_reduce='none',
+            recon_weight_power=1,
+            recon_weight_shift=True,
         )
-
-        # get wandb stuff!
-        if wandb:
-            wandb_logger = WandbLogger(
-                name=f'TEST:mtg-vae:{system.hparams.model_skip_mode}:{system.hparams.model_smooth_downsample}:{system.hparams.model_smooth_upsample}|{datamodule._batch_size}|{system.hparams.recon_loss}:{system.hparams.recon_weight_reduce}:{system.hparams.recon_weight_mode}',
-                project='MTG',
-                reinit=True
-            )
-            wandb_callbacks = [
-                WandbContextManagerCallback({**system.hparams, 'batch_size': datamodule._batch_size})
-            ]
-        else:
-            wandb_logger, wandb_callbacks = None, []
 
         # initialise model trainer
         trainer = pl.Trainer(
             gpus=1,
-            max_epochs=1,
+            max_epochs=500,
             # checkpoint_callback=False,
-            logger=wandb_logger,
+            logger=WandbLogger(
+                name=f'mtg-vae:{system.hparams.model_skip_mode}:{system.hparams.model_smooth_downsample}:{system.hparams.model_smooth_upsample}|{datamodule._batch_size}|{system.hparams.recon_loss}:{system.hparams.recon_weight_reduce}:{system.hparams.recon_weight_mode}',
+                project='MTG',
+            ),
             callbacks=[
-                *wandb_callbacks,
-                VisualiseCallback(every_n_steps=500, use_wandb=use_wandb),
-                # ModelCheckpoint(
-                #     dirpath=os.path.join('checkpoint_border', datetime.datetime.now().strftime('%Y-%m-%d_%H:%M:%S')),
-                #     monitor='recon',
-                #     every_n_train_steps=2500,
-                #     verbose=True,
-                #     save_top_k=5,
-                # ),
+                WandbContextManagerCallback({**system.hparams, 'batch_size': datamodule._batch_size}),
+                VisualiseCallback(every_n_steps=500, log_wandb=True, log_local=False),
+                ModelCheckpoint(
+                    dirpath=os.path.join('checkpoint_border', datetime.datetime.now().strftime('%Y-%m-%d_%H:%M:%S')),
+                    monitor='recon',
+                    every_n_train_steps=2500,
+                    verbose=True,
+                    save_top_k=5,
+                ),
             ]
         )
 
         # start training model
         trainer.fit(system, datamodule)
 
-
-    for repr_hidden_size in [None, 1024]:
-        for skip_mode in ['none', 'inner_alt', 'all_not_end', 'next_mid', 'all', 'next_all', 'inner', 'inner_mid']:
-            try:
-                main(True, skip_mode, repr_hidden_size)
-            except Exception as e:
-                warnings.warn(f'[FAILED]: {skip_mode} {repr_hidden_size} : {e}')
+    # ENTRYPOINT
+    logging.basicConfig(level=logging.INFO)
+    main()
 
 
 # ========================================================================= #
