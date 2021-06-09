@@ -103,10 +103,11 @@ We provide a helper dataset class for loading this generated file.
 
 ```python3
 from torch.utils.data import DataLoader
-from mtgdata.util import H5pyDataset
+from mtgdata.util import Hdf5Dataset
+
 
 # this h5py dataset supports pickling, and can be wrapped with a pytorch dataset.
-data = H5pyDataset(
+data = Hdf5Dataset(
     h5_path='data/mtg-default_cards-normal-60459x224x160x3.h5',
     h5_dataset_name='data',
 )

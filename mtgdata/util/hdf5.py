@@ -32,7 +32,7 @@ try:
     from torch.utils.data import Dataset as _Dataset
 except:
     import warnings
-    warnings.warn('torch is not installed, H5pyDataset will not be an instance of torch.utils.data.Dataset')
+    warnings.warn('torch is not installed, Hdf5Dataset will not be an instance of torch.utils.data.Dataset')
     _Dataset = object
 
 
@@ -42,7 +42,7 @@ except:
 # ========================================================================= #
 
 
-class H5pyDataset(_Dataset):
+class Hdf5Dataset(_Dataset):
     """
     This class supports pickling and unpickling of a read-only
     SWMR h5py file and corresponding dataset.
@@ -50,7 +50,7 @@ class H5pyDataset(_Dataset):
     WARNING: this should probably not be used across multiple hosts?
     """
 
-    def __init__(self, h5_path: str, h5_dataset_name: str, transform=None):
+    def __init__(self, h5_path: str, h5_dataset_name: str = 'data', transform=None):
         self._h5_path = h5_path
         self._h5_dataset_name = h5_dataset_name
         self._hdf5_file, self._hdf5_data = self._make_hdf5()

@@ -36,7 +36,7 @@ from tqdm import tqdm
 from mtgdata.scryfall import _data_dir
 from mtgdata.scryfall import ScryfallAPI
 from mtgdata.scryfall import ScryfallDataset
-from mtgdata.util import H5pyDataset
+from mtgdata.util import Hdf5Dataset
 
 
 logger = getLogger(__name__)
@@ -283,7 +283,7 @@ def generate_converted_dataset(
 
     # test the datasets
     if convert_speed_test:
-        hdat = H5pyDataset(path_data, 'data')
+        hdat = Hdf5Dataset(path_data, 'data')
         for i in tqdm(range(1500), desc='raw images test'): _ = data[i]
         for i in tqdm(range(10000), desc='converted hdf5 test'): _ = hdat[i]
 
@@ -302,7 +302,7 @@ if __name__ == '__main__':
         import argparse
         import logging
         from mtgdata.scryfall import _data_dir
-        from mtgdata.util.hdf5 import H5pyDataset
+        from mtgdata.util.hdf5 import Hdf5Dataset
 
         # parse arguments
         parser = argparse.ArgumentParser()
