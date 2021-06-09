@@ -327,7 +327,7 @@ class ScryfallDataset(ImageFolder):
             if clean_invalid_images:
                 for i, file_name in enumerate(sorted(existing - required)):
                     os.unlink(os.path.join(data_dir, file_name))
-                    logger.warning(f'{i+1}: invalid file existing in dataset directory was deleted: {os.path.join(data_dir, file_name)}')
+                    logger.warning(f'{i+1}: invalid file in dataset directory was deleted: {os.path.join(data_dir, file_name)}')
             else:
                 for i, file_name in enumerate(sorted(existing - required)):
                     logger.error(f'{i+1}: invalid file exists in dataset directory: {os.path.join(data_dir, file_name)}')

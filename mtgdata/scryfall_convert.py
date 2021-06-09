@@ -179,7 +179,7 @@ def dataset_save_meta(
 
 # sane modes that won't use too much disk space
 SANE_MODES = {
-    ('all_cards', 'small'),            # ~243280 cards ~3GB
+    ('all_cards',     'small'),        # ~243280 cards ~3GB
     ('default_cards', 'small'),        # ~60459 cards ~0.75GB
     ('default_cards', 'normal'),       # ~60459 cards
     ('default_cards', 'border_crop'),  # ~60459 cards
@@ -210,7 +210,7 @@ def generate_converted_dataset(
     out_img_type: str = 'border_crop',
     out_bulk_type: str = 'default_cards',
     out_obs_compression_lvl: int = 9,
-    out_obs_size: Tuple[int, int] = (224, 160),
+    out_obs_size: Optional[Tuple[int, int]] = (224, 160),  # if None, then the dataset is not resized
     out_obs_channels_first: bool = False,
     # save options
     save_root: Optional[str] = None,
@@ -225,6 +225,9 @@ def generate_converted_dataset(
     convert_num_workers: int = os.cpu_count(),
     convert_speed_test: bool = False,
 ) -> Tuple[str, str]:
+
+    if out_obs_size is None:
+        out_obs_size = ScryfallDataset.IMG_SHAPES[out_img_type][:2]
 
     height, width = out_obs_size
 
@@ -257,8 +260,9 @@ def generate_converted_dataset(
     obs_shape = data_shape[1:]
 
     # get paths & make sure parent folder exists
-    path_data = _data_dir(save_root, f'mtg-{out_bulk_type}-{data.bulk_date}-{out_img_type}-{data_shape_str}_c{out_obs_compression_lvl}.h5')
-    path_meta = _data_dir(save_root, f'mtg-{out_bulk_type}-{data.bulk_date}-{out_img_type}-{data_shape_str}_c{out_obs_compression_lvl}_meta.json')
+    bt, it = out_bulk_type.replace('_', '-'), out_img_type.replace('_', '-')
+    path_data = _data_dir(save_root, f'mtg_{bt}-{data.bulk_date}_{it}_{data_shape_str}_c{out_obs_compression_lvl}.h5')
+    path_meta = _data_dir(save_root, f'mtg_{bt}-{data.bulk_date}_{it}_{data_shape_str}_c{out_obs_compression_lvl}_meta.json')
     os.makedirs(_data_dir(save_root, None), exist_ok=True)
 
     # check paths
