@@ -97,8 +97,9 @@ class LaplaceMseLoss(nn.Module):
     https://arxiv.org/pdf/1806.02336.pdf
     """
 
-    def __init__(self):
+    def __init__(self, freq_ratio=0.5):
         super().__init__()
+        self._ratio = freq_ratio
         self._kernel = nn.Parameter(torch.as_tensor([
             [0,  1,  0],
             [1, -4,  1],
@@ -110,7 +111,7 @@ class LaplaceMseLoss(nn.Module):
         t_conv = torch_conv2d_channel_wise(target, self._kernel)
         loss_orig = F.mse_loss(x, target, reduction=reduction)
         loss_freq = F.mse_loss(x_conv, t_conv, reduction=reduction)
-        return (loss_orig + loss_freq) / 2
+        return (1 - self._ratio) * loss_orig + self._ratio * loss_freq
 
 
 # ========================================================================= #
@@ -290,29 +291,29 @@ if __name__ == '__main__':
         datamodule = Hdf5DataModule(
             'data/mtg_default-cards_20210608210352_border-crop_60480x224x160x3_c9.h5',
             val_ratio=0,
-            batch_size=48,
+            batch_size=32,
         )
 
         system = MtgVaeSystem(
-            lr=1e-3,
+            lr=5e-4,
             alpha=100,
-            beta=0.0001,
+            beta=0.01,
             # model options
             z_size=1024,
-            repr_hidden_size=1024,  # 1536,
-            repr_channels=64,  # 32*5*7 = 1120, 44*5*7 = 1540, 56*5*7 = 1960
-            channel_mul=1.25,
-            channel_start=96,
+            repr_hidden_size=1024+128,  # 1536,
+            repr_channels=128,  # 32*5*7 = 1120, 44*5*7 = 1540, 56*5*7 = 1960
+            channel_mul=1.19,
+            channel_start=160,
             model_skip_mode='inner',  # all, all_not_end, next_all, next_mid, none
             model_smooth_downsample=True,
             model_smooth_upsample=True,
             # training options
             is_vae=True,
             recon_loss='mse_laplace',
-            recon_weight_mode='none',
-            recon_weight_reduce='none',
+            recon_weight_mode='mean',
+            recon_weight_reduce='obs',
             recon_weight_power=1,
-            recon_weight_shift=True,
+            recon_weight_shift=False,
         )
 
         # initialise model trainer
