@@ -397,27 +397,31 @@ class ProxyDownloader:
 
 
 if __name__ == '__main__':
-    import argparse
-    import logging
 
-    # parse arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-d', '--cache-dir', type=str, default='data/cache/proxies')
-    parser.add_argument('-t', '--proxy-type', type=str, default='all')
-    parser.add_argument('-s', '--proxy-source', type=str, default=None)
-    parser.add_argument('-f', '--force-download', action='store_true')
-    args = parser.parse_args()
+    def _command_line_app():
+        import argparse
+        import logging
 
-    # download the proxies
-    logging.basicConfig(level=logging.DEBUG)
-    ProxyDownloader(
-        proxies=scrape_proxies(
-            source=args.proxy_source,
-            proxy_type=args.proxy_type,
-            cache_dir=args.cache_dir,
-            cached=not args.force_download,
+        # parse arguments
+        parser = argparse.ArgumentParser()
+        parser.add_argument('-d', '--cache-dir', type=str, default='data/cache/proxies')
+        parser.add_argument('-t', '--proxy-type', type=str, default='all')
+        parser.add_argument('-s', '--proxy-source', type=str, default=None)
+        parser.add_argument('-f', '--force-download', action='store_true')
+        args = parser.parse_args()
+
+        # download the proxies
+        logging.basicConfig(level=logging.DEBUG)
+        ProxyDownloader(
+            proxies=scrape_proxies(
+                source=args.proxy_source,
+                proxy_type=args.proxy_type,
+                cache_dir=args.cache_dir,
+                cached=not args.force_download,
+            )
         )
-    )
+
+    _command_line_app()
 
 
 # ============================================================================ #

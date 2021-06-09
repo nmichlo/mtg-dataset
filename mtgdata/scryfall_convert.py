@@ -24,14 +24,19 @@
 
 import json
 import os
+import warnings
 from logging import getLogger
+from typing import Optional
+from typing import Tuple
 
 import h5py
 import numpy as np
 from tqdm import tqdm
 
+from mtgdata.scryfall import _data_dir
 from mtgdata.scryfall import ScryfallAPI
 from mtgdata.scryfall import ScryfallDataset
+from mtgdata.util import H5pyDataset
 
 
 logger = getLogger(__name__)
@@ -69,7 +74,7 @@ class PilResizeNumpyTransform(object):
 # ========================================================================= #
 
 
-def make_dataset(bulk_type: str, img_type: str, resize=None, transpose=True, data_root=None, force_update=False, download_threads=64):
+def _make_conv_dataset(bulk_type: str, img_type: str, resize=None, transpose=True, data_root=None, force_update=False, download_threads=64, clean_invalid_images=False):
     data = ScryfallDataset(
         data_root=data_root,
         transform=PilResizeNumpyTransform(
@@ -83,11 +88,20 @@ def make_dataset(bulk_type: str, img_type: str, resize=None, transpose=True, dat
         img_type=img_type,
         force_update=force_update,
         download_threads=download_threads,
+        clean_invalid_images=clean_invalid_images,
     )
     return data
 
 
-def resave_dataset(data: ScryfallDataset, suffix='', batch_size=64, num_workers=os.cpu_count(), img_shape=None, overwrite=False, compression_lvl=4):
+def dataset_save_as_hdf5(
+    data: ScryfallDataset,
+    save_path: str,
+    batch_size=64,
+    num_workers=os.cpu_count(),
+    img_shape=None,
+    overwrite=False,
+    compression_lvl=4,
+):
     """
     Re-save the given Scryfall dataset as an HDF5 file.
     - the hdf5 file will have the key `data`
@@ -96,19 +110,18 @@ def resave_dataset(data: ScryfallDataset, suffix='', batch_size=64, num_workers=
         from torch.utils.data import DataLoader
     except:
         raise ImportError('please install pytorch if you wish to convert the dataset.')
-    # defaults
-    if suffix is None:
-        suffix = ''
+    # defaults & checks
     if img_shape is None:
         img_shape = data.img_shape
-    path = f'data/mtg-{data.bulk_type}-{data.img_type}{suffix}.h5'
+    if not save_path.endswith('.h5'):
+        raise ValueError('save_path must end with the ".h5" extension')
     # skip if exists
     if not overwrite:
-        if os.path.exists(path):
-            logger.info(f'dataset already exists and overwriting is not enabled, skipping: {path}')
-            return path
+        if os.path.exists(save_path):
+            logger.info(f'dataset already exists and overwriting is not enabled, skipping: {repr(save_path)}')
+            return
     # open file
-    with h5py.File(path, 'w', libver='earliest') as f:
+    with h5py.File(save_path, 'w', libver='earliest') as f:
         # create new dataset
         d = f.create_dataset(
             name='data',
@@ -125,12 +138,38 @@ def resave_dataset(data: ScryfallDataset, suffix='', batch_size=64, num_workers=
         # dataloader
         dataloader = DataLoader(data, batch_size=batch_size, num_workers=num_workers, shuffle=False, drop_last=False)
         # save data
-        with tqdm(desc=f'Converting: {os.path.basename(path)}', total=len(data)) as p:
+        with tqdm(desc=f'Converting: {os.path.basename(save_path)}', total=len(data)) as p:
             for i, batch in enumerate(dataloader):
                 d[i*batch_size:(i+1)*batch_size] = batch
                 p.update(len(batch))
-    # done
-    return path
+        # done
+        logger.info(f'saved converted dataset: {repr(save_path)}')
+
+
+def dataset_save_meta(
+    data: ScryfallDataset,
+    save_path: str,
+    data_root: Optional[str] = None,
+    overwrite: bool = False,
+):
+    if not save_path.endswith('.json'):
+        raise ValueError('save_path must end with the ".json" extension')
+    # check exists
+    if not overwrite:
+        if os.path.exists(save_path):
+            logger.warning(f'cards list already exists, overwriting not enabled, skipping: {repr(save_path)}')
+            return
+    # collect card information
+    card_info = tqdm(ScryfallAPI.card_face_info_iter(img_type=data.img_type, bulk_type=data.bulk_type, data_root=data_root), desc='Loading Cards List')
+    card_info = [{'idx': i, **info.__dict__} for i, info in enumerate(sorted(card_info, key=lambda x: x.img_file))]
+    # check that card_info corresponds to the dataset
+    # and that everything is sorted correctly!
+    assert len(card_info) == len(data)
+    assert [info['img_file'] for info in card_info] == [os.path.join(os.path.basename(os.path.dirname(sample[0])), os.path.basename(sample[0])) for sample in data.samples]
+    # save!
+    with open(save_path, 'w') as f:
+        json.dump(card_info, f, sort_keys=False)
+    logger.info(f'saved dataset meta: {repr(save_path)}')
 
 
 # ========================================================================= #
@@ -145,12 +184,6 @@ SANE_MODES = {
     ('default_cards', 'normal'),       # ~60459 cards
     ('default_cards', 'border_crop'),  # ~60459 cards
 }
-
-
-# ========================================================================= #
-# Entry Points                                                              #
-# ========================================================================= #
-
 
 # ORIGINAL ASPECT RATIOS:
 # 'small':       (204,  146, 3),    # ASPECT: 1,397260274  | PRIME FACTORS: 2*2*3*17, 2*73         | GCF: 2
@@ -172,102 +205,150 @@ SANE_MODES = {
 # default_normal - out: 1769.92it/s ~5.2GB
 
 
-if __name__ == '__main__':
-    import argparse
-    import logging
-    from mtgdata.scryfall import _data_dir
-    from mtgdata.util.hdf5 import H5pyDataset
+def generate_converted_dataset(
+    # output settings
+    out_img_type: str = 'border_crop',
+    out_bulk_type: str = 'default_cards',
+    out_obs_compression_lvl: int = 9,
+    out_obs_size: Tuple[int, int] = (224, 160),
+    out_obs_channels_first: bool = False,
+    # save options
+    save_root: Optional[str] = None,
+    save_overwrite: bool = False,
+    # image download settings
+    data_root: Optional[str] = None,
+    imgs_force_update: bool = False,
+    imgs_download_threads: int = os.cpu_count() * 2,
+    imgs_clean_invalid: bool = False,
+    # conversion settings
+    convert_batch_size: int = 128,
+    convert_num_workers: int = os.cpu_count(),
+    convert_speed_test: bool = False,
+) -> Tuple[str, str]:
 
-    # parse arguments
-    parser = argparse.ArgumentParser()
-    # these should match scryfall.py
-    parser.add_argument('-b', '--bulk_type', type=str, default='default_cards')            # SEE: https://scryfall.com/docs/api/bulk-data
-    parser.add_argument('-i', '--img-type', type=str, default='border_crop')               # SEE: https://scryfall.com/docs/api/images
-    parser.add_argument('-d', '--data-root', type=str, default=_data_dir(None, None))      # download and cache directory location
-    parser.add_argument('-f', '--force-download', action='store_true')                     # overwrite existing files and ignore caches
-    parser.add_argument('-t', '--download_threads', type=int, default=os.cpu_count() * 2)  # number of threads to use when downloading files
-    # extra args
-    parser.add_argument('-s', '--size', type=str, default='224x160')        # resized image shape: HEIGHT x WIDTH
-    parser.add_argument('-c', '--channels-first', action='store_true')      # if specified saves image channels first with the shape: (C, H, W) instead of: (H, W, C)
-    parser.add_argument('--num-workers', type=int, default=os.cpu_count())  # number of workers to use when processing the dataset
-    parser.add_argument('--batch-size', type=int, default=128)              # number of images to load in every batch when processing the dataset
-    parser.add_argument('--no-test', action='store_false')                  # if specified, disabled testing the before and after dataset speeds
-    parser.add_argument('--suffix', type=str, default='')                   # string to add to the end of the file name
-    parser.add_argument('--overwrite', action='store_true')                 # overwrite existing generated dataset files
-    parser.add_argument('--compression-lvl', type=int, default=9)           # the compression level of the h5py file (0 to 9)
-    parser.add_argument('--skip-cards-list', action='store_true')           # do not generate or overwrite the cards list
-    args = parser.parse_args()
-
-    # update args
-    try:
-        args.height, args.width = (int(v) for v in args.size.split('x'))
-    except:
-        raise ValueError(f'invalid size argument: {repr(args.size)}, must be of format: "<height>x<width>", eg. "224x160"')
-
-    # check args
-    if args.height / args.width != 1.4:
-        logging.warning(f'Aspect ratio of height/width is not 1.4, given: {args.size} which gives {args.height/args.width}')
-    if (args.bulk_type, args.img_type) not in SANE_MODES:
-        logging.warning(f'Current combination of bulk and image types might generate a lot of data: {(args.bulk_type, args.img_type)} consider instead one of: {sorted(SANE_MODES)}')
+    height, width = out_obs_size
 
     # download the dataset
-    logging.basicConfig(level=logging.INFO)
-    _data = make_dataset(
-        bulk_type=args.bulk_type,
-        img_type=args.img_type,
-        data_root=args.data_root,
-        force_update=args.force_download,
-        download_threads=args.download_threads,
-        # extra
-        resize=(args.height, args.width),
-        transpose=args.channels_first,
+    data = _make_conv_dataset(
+        bulk_type=out_bulk_type,
+        img_type=out_img_type,
+        data_root=data_root,
+        force_update=imgs_force_update,
+        download_threads=imgs_download_threads,
+        resize=out_obs_size,
+        transpose=out_obs_channels_first,
+        clean_invalid_images=imgs_clean_invalid,
     )
 
-    # make sure the data is sorted correctly by the path
-    assert _data.samples == sorted(_data.samples, key=lambda x: x[0])
+    # check args
+    if height / width != 1.4:
+        warnings.warn(f'Aspect ratio of height/width is not 1.4, given: {height}x{width} which gives {height / width}')
+    if (out_bulk_type, out_img_type) not in SANE_MODES:
+        warnings.warn(f'Current combination of bulk and image types might generate a lot of data: {(out_bulk_type, out_img_type)} consider instead one of: {sorted(SANE_MODES)}')
+    if (height > data.img_shape[0]) or (width > data.img_shape[1]):
+        warnings.warn(f'images are being unscaled from input size of: {data.img_shape[:2]} to: {(height, width)}')
 
-    # check sizes
-    if (args.height > _data.img_shape[0]) or (args.width > _data.img_shape[1]):
-        logging.warning(f'images are being unscaled from input size of: {_data.img_shape[:2]} to: {(args.height, args.width)}')
+    if data.samples != sorted(data.samples, key=lambda x: x[0]):
+        raise RuntimeError('dataset did not load samples in alphabetical order, this is a bug.')
+
+    # get the shape of the dataset
+    data_shape = (len(data), 3, height, width) if out_obs_channels_first else (len(data), height, width, 3)
+    data_shape_str = 'x'.join(str(d) for d in data_shape)
+    obs_shape = data_shape[1:]
+
+    # get paths & make sure parent folder exists
+    path_data = _data_dir(save_root, f'mtg-{out_bulk_type}-{data.bulk_date}-{out_img_type}-{data_shape_str}_c{out_obs_compression_lvl}.h5')
+    path_meta = _data_dir(save_root, f'mtg-{out_bulk_type}-{data.bulk_date}-{out_img_type}-{data_shape_str}_c{out_obs_compression_lvl}_meta.json')
+    os.makedirs(_data_dir(save_root, None), exist_ok=True)
+
+    # check paths
+    if not save_overwrite:
+        if os.path.exists(path_data) or os.path.exists(path_meta):
+            logger.warning(f'converted dataset or meta files already exist: {repr(path_data)} or {repr(path_meta)}')
+            return path_data, path_meta
 
     # convert the dataset
-    _path = resave_dataset(
-        _data,
-        suffix=f'-{len(_data)}x3x{args.size}{args.suffix}' if args.channels_first else f'-{len(_data)}x{args.size}x3{args.suffix}',
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        img_shape=(3, args.height, args.width) if args.channels_first else (args.height, args.width, 3),
-        overwrite=args.overwrite,
-        compression_lvl=args.compression_lvl,
+    dataset_save_as_hdf5(
+        data, save_path=path_data, overwrite=save_overwrite,
+        img_shape=obs_shape, compression_lvl=out_obs_compression_lvl,
+        batch_size=convert_batch_size, num_workers=convert_num_workers,
     )
 
+    # save dataset meta
+    dataset_save_meta(data, save_path=path_meta, overwrite=save_overwrite)
+
     # test the datasets
-    if not args.no_test:
-        _hdat = H5pyDataset(_path, 'data')
-        # make sure the length is the same!
-        assert len(_hdat) == len(_data)
-        # test!
-        for i in tqdm(range(1500), desc='inp test'): item = _data[i]
-        for i in tqdm(range(10000), desc='out test'): item = _hdat[i]
+    if convert_speed_test:
+        hdat = H5pyDataset(path_data, 'data')
+        for i in tqdm(range(1500), desc='raw images test'): _ = data[i]
+        for i in tqdm(range(10000), desc='converted hdf5 test'): _ = hdat[i]
 
-    # save cards lists
-    if not args.skip_cards_list:
-        cards_path = f'{_path[:-len(".h5")]}_cards-list.json'
-        # check exists
-        if os.path.exists(cards_path) and not args.overwrite:
-            logger.warning(f'cards list already exists, overwriting not enabled, skipping: {cards_path}')
-        else:
-            card_info = tqdm(ScryfallAPI.card_face_info_iter(img_type=args.img_type, bulk_type=args.bulk_type, data_root=args.data_root), desc='Loading Cards List')
-            card_info = sorted(card_info, key=lambda x: x.img_file)
-            card_info = [{'idx': i, **info.__dict__} for i, info in enumerate(card_info)]
-            # check that card_info corresponds to the dataset
-            # and that everything is sorted correctly!
-            assert len(card_info) == len(_data)
-            assert [info['img_file'] for info in card_info] == [os.path.join(os.path.basename(os.path.dirname(sample[0])), os.path.basename(sample[0])) for sample in _data.samples]
-            # save!
-            with open(cards_path, 'w') as f:
-                json.dump(card_info, f, sort_keys=False)
-            logger.info(f'saved card info: {cards_path}')
+    # done!
+    return path_data, path_meta
 
-    # TODO: also copy and rename bulk data
-    #       -- so we can access original data and attributes
+
+# ========================================================================= #
+# Entry Points                                                              #
+# ========================================================================= #
+
+
+if __name__ == '__main__':
+
+    def _command_line_app():
+        import argparse
+        import logging
+        from mtgdata.scryfall import _data_dir
+        from mtgdata.util.hdf5 import H5pyDataset
+
+        # parse arguments
+        parser = argparse.ArgumentParser()
+        # these should match scryfall.py
+        parser.add_argument('-b', '--bulk_type', type=str, default='default_cards')            # SEE: https://scryfall.com/docs/api/bulk-data
+        parser.add_argument('-i', '--img-type', type=str, default='border_crop')               # SEE: https://scryfall.com/docs/api/images
+        parser.add_argument('-d', '--data-root', type=str, default=None)                       # download and cache directory location
+        parser.add_argument('-f', '--force-update', action='store_true')                       # overwrite existing files and ignore caches
+        parser.add_argument('-t', '--download_threads', type=int, default=os.cpu_count() * 2)  # number of threads to use when downloading files
+        parser.add_argument('--clean-invalid-images', action='store_true')                     # delete invalid image files
+        # extra args
+        parser.add_argument('-o', '--out-root', type=str, default=None)         # output folder
+        parser.add_argument('-s', '--size', type=str, default='224x160')        # resized image shape: HEIGHT x WIDTH
+        parser.add_argument('-c', '--channels-first', action='store_true')      # if specified saves image channels first with the shape: (C, H, W) instead of: (H, W, C)
+        parser.add_argument('--num-workers', type=int, default=os.cpu_count())  # number of workers to use when processing the dataset
+        parser.add_argument('--batch-size', type=int, default=128)              # number of images to load in every batch when processing the dataset
+        parser.add_argument('--skip-speed-test', action='store_true')           # if specified, disabled testing the before and after dataset speeds
+        parser.add_argument('--suffix', type=str, default='')                   # string to add to the end of the file name
+        parser.add_argument('--overwrite', action='store_true')                 # overwrite existing generated dataset files
+        parser.add_argument('--compression-lvl', type=int, default=9)           # the compression level of the h5py file (0 to 9)
+        args = parser.parse_args()
+
+        # update args
+        try:
+            args.height, args.width = (int(v) for v in args.size.split('x'))
+        except:
+            raise ValueError(f'invalid size argument: {repr(args.size)}, must be of format: "<height>x<width>", eg. "224x160"')
+
+        logging.basicConfig(level=logging.INFO)
+
+        # convert dataset
+        generate_converted_dataset(
+            # output settings
+            out_img_type=args.img_type,
+            out_bulk_type=args.bulk_type,
+            out_obs_compression_lvl=args.compression_lvl,
+            out_obs_size=(args.height, args.width),
+            out_obs_channels_first=args.channels_first,
+            # save options
+            save_root=args.out_root,
+            save_overwrite=args.overwrite,
+            # image download settings
+            data_root=args.data_root,
+            imgs_force_update=args.force_update,
+            imgs_download_threads=args.download_threads,
+            imgs_clean_invalid=args.clean_invalid_images,
+            # conversion settings
+            convert_batch_size=args.batch_size,
+            convert_num_workers=args.num_workers,
+            convert_speed_test=not args.skip_speed_test,
+        )
+
+    _command_line_app()
