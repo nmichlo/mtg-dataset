@@ -75,7 +75,7 @@ probably go out of date. You can override the *default* scrape logic used by the
 logic  by registering a new scrape function.
 
 ```python3
-from mtgdata.utils.proxy import register_proxy_scraper
+from mtgdata.util.proxy import register_proxy_scraper
 from typing import List, Dict
 
 @register_proxy_scraper(name='my_proxy_source', is_default=True)
@@ -114,7 +114,7 @@ the `mtgdata.scryfall_convert.generate_converted_dataset` function. Similar argu
 as that of the command line approach.
 
 ```python3
-from mtgdata.scryfall_convert import generate_converted_dataset 
+from mtgdata import generate_converted_dataset 
 
 generate_converted_dataset(
     out_img_type='border_crop',
@@ -131,7 +131,7 @@ We provide a helper dataset class for loading this generated file.
 
 ```python3
 from torch.utils.data import DataLoader
-from mtgdata.util import Hdf5Dataset
+from mtgdata import Hdf5Dataset
 
 
 # this h5py dataset supports pickling, and can be wrapped with a pytorch dataset.
