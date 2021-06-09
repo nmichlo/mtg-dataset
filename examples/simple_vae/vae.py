@@ -21,6 +21,7 @@
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
+
 import datetime
 import os
 
@@ -28,21 +29,19 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
-from disent.nn.functional import torch_conv2d_channel_wise, torch_conv2d_channel_wise_fft, get_kernel_size
+import wandb
+from disent.nn.functional import get_kernel_size
+from disent.nn.functional import torch_conv2d_channel_wise
+from disent.nn.functional import torch_conv2d_channel_wise_fft
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 from torch import nn
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.utils.data import DataLoader
 
-from examples.common import ToTensor
+from examples.common import Hdf5DataModule
 from examples.common import VisualiseCallback
-
-from examples.simple_vae.nn.kornia import rgb_to_hsv
 from examples.simple_vae.nn.model_alt import AutoEncoderSkips
-from mtgml.util.hdf5 import H5pyDataset
-import wandb
 
 
 def torch_laplace_kernel2d(size, sigma=1.0, normalise=True):
@@ -60,21 +59,8 @@ def torch_laplace_kernel2d(size, sigma=1.0, normalise=True):
     return kernel[None, None, :, :]
 
 
-def to_hsv_for_loss(x, t, augment_hsv: bool):
-    if augment_hsv:
-        s = torch.as_tensor([3*0.4, 3*0.1, 3*0.5], dtype=torch.float32, device=x.device)[None, :, None, None]
-        x = torch.cat([x, s * rgb_to_hsv(torch.clip(x, 0, 1))], dim=1)
-        t = torch.cat([t, s * rgb_to_hsv(torch.clip(t, 0, 1))], dim=1)
-    return x, t
-
-
 class MseLoss(nn.Module):
-    def __init__(self, augment_hsv=False):
-        super().__init__()
-        self._augment_hsv = augment_hsv
-
     def forward(self, x, target, reduction='mean'):
-        x, target = to_hsv_for_loss(x, target, augment_hsv=self._augment_hsv)
         return F.mse_loss(x, target, reduction=reduction)
 
 
@@ -84,20 +70,18 @@ class SpatialFreqLoss(nn.Module):
     https://arxiv.org/pdf/1806.02336.pdf
     """
 
-    def __init__(self, sigmas=(0.8, 1.6, 3.2), truncate=3, fft=True, augment_hsv=False):
+    def __init__(self, sigmas=(0.8, 1.6, 3.2), truncate=3, fft=True):
         super().__init__()
         assert len(sigmas) > 0
         self._kernels = nn.ParameterList([
             nn.Parameter(torch_laplace_kernel2d(get_kernel_size(sigma=sigma, truncate=truncate), sigma=sigma, normalise=True), requires_grad=False)
             for sigma in sigmas
         ])
-        self._augment_hsv = augment_hsv
         print([k.shape for k in self._kernels])
         self._n = len(self._kernels)
         self._conv_fn = torch_conv2d_channel_wise_fft if fft else torch_conv2d_channel_wise
 
     def forward(self, x, target, reduction='mean'):
-        x, target = to_hsv_for_loss(x, target, augment_hsv=self._augment_hsv)
         loss_orig = F.mse_loss(x, target, reduction=reduction)
         loss_freq = 0
         for kernel in self._kernels:
@@ -105,23 +89,21 @@ class SpatialFreqLoss(nn.Module):
         return (loss_orig + loss_freq) / (self._n + 1)
 
 
-class SpatialFreqMseLoss(nn.Module):
+class LaplaceMseLoss(nn.Module):
     """
     Modified from:
     https://arxiv.org/pdf/1806.02336.pdf
     """
 
-    def __init__(self, augment_hsv=False):
+    def __init__(self):
         super().__init__()
         self._kernel = nn.Parameter(torch.as_tensor([
             [0,  1,  0],
             [1, -4,  1],
             [0,  1,  0],
         ], dtype=torch.float32), requires_grad=False)
-        self._augment_hsv = augment_hsv
 
     def forward(self, x, target, reduction='mean'):
-        x, target = to_hsv_for_loss(x, target, augment_hsv=self._augment_hsv)
         x_conv = torch_conv2d_channel_wise(x, self._kernel)
         t_conv = torch_conv2d_channel_wise(target, self._kernel)
         loss_orig = F.mse_loss(x, target, reduction=reduction)
@@ -180,7 +162,7 @@ def mean_weighted_loss(unreduced_loss, weight_mode: str = 'mean', weight_reduce=
 # ========================================================================= #
 
 
-class MtgSystem(pl.LightningModule):
+class MtgVaeSystem(pl.LightningModule):
 
     def get_progress_bar_dict(self):
         # https://github.com/PyTorchLightning/pytorch-lightning/issues/1595
@@ -199,7 +181,7 @@ class MtgSystem(pl.LightningModule):
         repr_channels=16,
         channel_mul=1.5,
         channel_start=16,
-        model_all_skips=False,
+        model_skip_mode='next',
         model_smooth_upsample=False,
         model_smooth_downsample=False,
         # training options
@@ -219,16 +201,18 @@ class MtgSystem(pl.LightningModule):
             channel_mul=self.hparams.channel_mul,
             channel_start=self.hparams.channel_start,
             #
-            all_skips=self.hparams.model_all_skips,
+            skip_mode=self.hparams.model_skip_mode,
             smooth_upsample=self.hparams.model_smooth_upsample,
             smooth_downsample=self.hparams.model_smooth_downsample,
             sigmoid_out=False,
         )
         # get loss
         if self.hparams.recon_loss == 'mse':
-            self._loss = MseLoss(augment_hsv=False)
+            self._loss = MseLoss()
+        elif self.hparams.recon_loss == 'mse_laplace':
+            self._loss = LaplaceMseLoss()
         elif self.hparams.recon_loss == 'mse_freq':
-            self._loss = SpatialFreqLoss(augment_hsv=False)
+            self._loss = SpatialFreqLoss()
         else:
             raise KeyError(f'invalid recon_loss: {self.hparams.recon_loss}')
 
@@ -281,39 +265,35 @@ if __name__ == '__main__':
 
     def main(use_wandb=False):
 
-        dataloader = DataLoader(
-            dataset=H5pyDataset(
-                h5_path='data/mtg-default_cards-normal-224x160x3.h5',
-                h5_dataset_name='data',
-                transform=ToTensor(move_channels=True),
-            ),
-            num_workers=os.cpu_count(),
-            batch_size=64,
-            shuffle=True,
+        datamodule = Hdf5DataModule(
+            'data/mtg_default-cards_20210608210352_border-crop_60480x224x160x3_c9.h5',
+            val_ratio=0,
+            batch_size=64-32,
         )
 
-        model = MtgSystem(
+        system = MtgVaeSystem(
             lr=1e-3,
+            alpha=100,
             beta=0.0001,
             # model options
             z_size=1024,
-            repr_hidden_size=None, # 1536,
+            repr_hidden_size=None,  # 1536,
             repr_channels=64,  # 32*5*7 = 1120, 44*5*7 = 1540, 56*5*7 = 1960
             channel_mul=1.2,
             channel_start=80,
-            model_all_skips=False,
+            model_skip_mode='inner',  # all, all_not_end, next_all, next_mid, none
+            model_smooth_downsample=True,
             model_smooth_upsample=False,
-            model_smooth_downsample=False,
             # training options
             is_vae=True,
-            recon_loss='mse_freq',
-            recon_weight_reduce='obs',
-            recon_weight_mode='distscale2',
+            recon_loss='mse_laplace',
+            recon_weight_reduce='mean',
+            recon_weight_mode='none',
         )
 
         if use_wandb:
             print()
-            for k, v in model.hparams.items():
+            for k, v in system.hparams.items():
                 setattr(wandb.config, f'model/{k}', v)
                 print(f'model/{k}:', repr(v))
             print()
@@ -322,11 +302,14 @@ if __name__ == '__main__':
             gpus=1,
             max_epochs=500,
             # checkpoint_callback=False,
-            logger=WandbLogger(name=f'mtg-vae|{model.hparams.recon_loss}:{model.hparams.recon_weight_reduce}:{model.hparams.recon_weight_mode}', project='MTG') if use_wandb else False,
+            logger=WandbLogger(
+                name=f'mtg-vae:{system.hparams.model_skip_mode}:{system.hparams.model_smooth_downsample}:{system.hparams.model_smooth_upsample}|{system.hparams.recon_loss}:{system.hparams.recon_weight_reduce}:{system.hparams.recon_weight_mode}',
+                project='MTG'
+            ) if use_wandb else False,
             callbacks=[
                 VisualiseCallback(every_n_steps=500, use_wandb=use_wandb),
                 ModelCheckpoint(
-                    dirpath=os.path.join('checkp', datetime.datetime.now().strftime('%Y-%m-%d_%H:%M:%S')),
+                    dirpath=os.path.join('checkpoint_border', datetime.datetime.now().strftime('%Y-%m-%d_%H:%M:%S')),
                     monitor='recon',
                     every_n_train_steps=2500,
                     verbose=True,
@@ -335,7 +318,7 @@ if __name__ == '__main__':
             ]
         )
 
-        trainer.fit(model, dataloader)
+        trainer.fit(system, datamodule)
 
     # RUN
     main(use_wandb=True)

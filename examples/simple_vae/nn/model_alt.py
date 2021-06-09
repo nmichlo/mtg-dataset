@@ -51,7 +51,7 @@ def ConvUp(in_channels: int, out_channels: int, kernel_size: int = 4):
 
 class AutoEncoderSkips(BaseAutoEncoder):
 
-    def __init__(self, z_size: int = 128, repr_channels: int = 16, repr_hidden_size: Optional[int] = None, channel_mul=1.5, channel_start=16, all_skips=False, smooth_upsample=True, smooth_downsample=True, sigmoid_out=False):
+    def __init__(self, z_size: int = 128, repr_channels: int = 16, repr_hidden_size: Optional[int] = None, channel_mul=1.5, channel_start=16, skip_mode='some', smooth_upsample=True, smooth_downsample=True, sigmoid_out=False):
         super().__init__()
 
         def c(i: int):
@@ -89,7 +89,7 @@ class AutoEncoderSkips(BaseAutoEncoder):
                 # skip_connections starting at x4
                 self.s4_5 = nn.Sequential(Pool(kernel_size=2), SingleConv(c(3), repr_channels))
 
-            if all_skips:
+            if skip_mode == 'all':
                 def forward(self, x0):
                     x1 = self.act1(self.enc1(x0) + self.s0_1(x0))
                     x2 = self.act2(self.enc2(x1) + self.s0_2(x0) + self.s1_2(x1))
@@ -97,13 +97,53 @@ class AutoEncoderSkips(BaseAutoEncoder):
                     x4 = self.act4(self.enc4(x3) + self.s0_4(x0) + self.s1_4(x1) + self.s2_4(x2) + self.s3_4(x3))
                     x5 = self.act5(self.enc5(x4) + self.s0_5(x0) + self.s1_5(x1) + self.s2_5(x2) + self.s3_5(x3) + self.s4_5(x4))
                     return x5
-            else:
+            elif skip_mode == 'all_not_end':
                 def forward(self, x0):
                     x1 = self.act1(self.enc1(x0))
                     x2 = self.act2(self.enc2(x1) + self.s1_2(x1))
                     x3 = self.act3(self.enc3(x2) + self.s1_3(x1) + self.s2_3(x2))
                     x4 = self.act4(self.enc4(x3) + self.s1_4(x1) + self.s2_4(x2) + self.s3_4(x3))
                     x5 = self.act5(self.enc5(x4) + self.s1_5(x1) + self.s2_5(x2) + self.s3_5(x3) + self.s4_5(x4))
+                    return x5
+            elif skip_mode == 'next_all':
+                def forward(self, x0):
+                    x1 = self.act1(self.enc1(x0) + self.s0_1(x0))
+                    x2 = self.act2(self.enc2(x1) + self.s1_2(x1))
+                    x3 = self.act3(self.enc3(x2) + self.s2_3(x2))
+                    x4 = self.act4(self.enc4(x3) + self.s3_4(x3))
+                    x5 = self.act5(self.enc5(x4) + self.s4_5(x4))
+                    return x5
+            elif skip_mode == 'next_mid':
+                def forward(self, x0):
+                    x1 = self.act1(self.enc1(x0))
+                    x2 = self.act2(self.enc2(x1))
+                    x3 = self.act3(self.enc3(x2) + self.s1_3(x1))
+                    x4 = self.act4(self.enc4(x3))
+                    x5 = self.act5(self.enc5(x4) + self.s3_5(x3))
+                    return x5
+            elif skip_mode == 'none':
+                def forward(self, x0):
+                    x1 = self.act1(self.enc1(x0))
+                    x2 = self.act2(self.enc2(x1))
+                    x3 = self.act3(self.enc3(x2))
+                    x4 = self.act4(self.enc4(x3))
+                    x5 = self.act5(self.enc5(x4))
+                    return x5
+            elif skip_mode == 'inner':
+                def forward(self, x0):
+                    x1 = self.act1(self.enc1(x0))
+                    x2 = self.act2(self.enc2(x1))
+                    x3 = self.act3(self.enc3(x2))
+                    x4 = self.act4(self.enc4(x3))
+                    x5 = self.act5(self.enc5(x4) + self.s0_5(x0) + self.s1_5(x1) + self.s2_5(x2) + self.s3_5(x3) + self.s4_5(x4))
+                    return x5
+            elif skip_mode == 'inner_mid':
+                def forward(self, x0):
+                    x1 = self.act1(self.enc1(x0))
+                    x2 = self.act2(self.enc2(x1))
+                    x3 = self.act3(self.enc3(x2))
+                    x4 = self.act4(self.enc4(x3))
+                    x5 = self.act5(self.enc5(x4) + self.s1_5(x1) + self.s3_5(x3))
                     return x5
 
         Upsampler = nn.UpsamplingBilinear2d if smooth_upsample else nn.UpsamplingNearest2d
@@ -132,14 +172,14 @@ class AutoEncoderSkips(BaseAutoEncoder):
                 # skip_connections starting at x2
                 self.s2_3 = nn.Sequential(Upsampler(scale_factor=2), SingleConv(c(2), c(1)))
                 self.s2_4 = nn.Sequential(Upsampler(scale_factor=4), SingleConv(c(2), c(0)))
-                self.s2_5 = nn.Sequential(Upsampler(scale_factor=8), SingleConv(c(2), 3))
+                self.s2_5 = nn.Sequential(Upsampler(scale_factor=8), SingleConv(c(2), c(-1)))
                 # skip_connections starting at x3
                 self.s3_4 = nn.Sequential(Upsampler(scale_factor=2), SingleConv(c(1), c(0)))
                 self.s3_5 = nn.Sequential(Upsampler(scale_factor=4), SingleConv(c(1), c(-1)))
                 # skip_connections starting at x4
                 self.s4_5 = nn.Sequential(Upsampler(scale_factor=2), SingleConv(c(0), c(-1)))
 
-            if all_skips:
+            if skip_mode == 'all':
                 def forward(self, z0):
                     z1 = self.act1(self.dec1(z0) + self.s0_1(z0))
                     z2 = self.act2(self.dec2(z1) + self.s0_2(z0) + self.s1_2(z1))
@@ -147,13 +187,53 @@ class AutoEncoderSkips(BaseAutoEncoder):
                     z4 = self.act4(self.dec4(z3) + self.s0_4(z0) + self.s1_4(z1) + self.s2_4(z2) + self.s3_4(z3))
                     z5 = self.act5(self.dec5(z4) + self.s0_5(z0) + self.s1_5(z1) + self.s2_5(z2) + self.s3_5(z3) + self.s4_5(z4))
                     return self.out(z5)
-            else:
+            elif skip_mode == 'all_not_end':
                 def forward(self, z0):
                     z1 = self.act1(self.dec1(z0) + self.s0_1(z0))
                     z2 = self.act2(self.dec2(z1) + self.s0_2(z0) + self.s1_2(z1))
                     z3 = self.act3(self.dec3(z2) + self.s0_3(z0) + self.s1_3(z1) + self.s2_3(z2))
                     z4 = self.act4(self.dec4(z3) + self.s0_4(z0) + self.s1_4(z1) + self.s2_4(z2) + self.s3_4(z3))
                     z5 = self.act5(self.dec5(z4))
+                    return self.out(z5)
+            elif skip_mode == 'next_all':
+                def forward(self, z0):
+                    z1 = self.act1(self.dec1(z0) + self.s0_1(z0))
+                    z2 = self.act2(self.dec2(z1) + self.s1_2(z1))
+                    z3 = self.act3(self.dec3(z2) + self.s2_3(z2))
+                    z4 = self.act4(self.dec4(z3) + self.s3_4(z3))
+                    z5 = self.act5(self.dec5(z4) + self.s4_5(z4))
+                    return self.out(z5)
+            elif skip_mode == 'next_mid':
+                def forward(self, z0):
+                    z1 = self.act1(self.dec1(z0))
+                    z2 = self.act2(self.dec2(z1))
+                    z3 = self.act3(self.dec3(z2) + self.s1_3(z1))
+                    z4 = self.act4(self.dec4(z3))
+                    z5 = self.act5(self.dec5(z4) + self.s3_5(z3))
+                    return self.out(z5)
+            elif skip_mode == 'none':
+                def forward(self, z0):
+                    z1 = self.act1(self.dec1(z0))
+                    z2 = self.act2(self.dec2(z1))
+                    z3 = self.act3(self.dec3(z2))
+                    z4 = self.act4(self.dec4(z3))
+                    z5 = self.act5(self.dec5(z4))
+                    return self.out(z5)
+            elif skip_mode == 'inner':
+                def forward(self, z0):
+                    z1 = self.act1(self.dec1(z0))
+                    z2 = self.act2(self.dec2(z1))
+                    z3 = self.act3(self.dec3(z2))
+                    z4 = self.act4(self.dec4(z3))
+                    z5 = self.act5(self.dec5(z4) + self.s0_5(z0) + self.s1_5(z1) + self.s2_5(z2) + self.s3_5(z3) + self.s4_5(z4))
+                    return self.out(z5)
+            elif skip_mode == 'inner_mid':
+                def forward(self, z0):
+                    z1 = self.act1(self.dec1(z0))
+                    z2 = self.act2(self.dec2(z1))
+                    z3 = self.act3(self.dec3(z2))
+                    z4 = self.act4(self.dec4(z3))
+                    z5 = self.act5(self.dec5(z4) + self.s1_5(z1) + self.s3_5(z3))
                     return self.out(z5)
 
         # BASE MODES

@@ -18,7 +18,7 @@ from torchvision.datasets import MNIST
 
 from examples.common import ToTensor
 from examples.common import VisualiseCallback
-from mtgdata.util import H5pyDataset
+from mtgdata.util import Hdf5Dataset
 
 
 class Generator(nn.Module):
@@ -218,7 +218,7 @@ if __name__ == '__main__':
     def main(use_wandb=False):
 
         dataloader = DataLoader(
-            dataset=H5pyDataset(
+            dataset=Hdf5Dataset(
                 h5_path='data/mtg-default_cards-normal-224x160x3.h5',
                 h5_dataset_name='data',
                 transform=ToTensor(move_channels=True),
@@ -279,6 +279,7 @@ if __name__ == '__main__':
 
     # RUN
     main(use_wandb=True)
+
 
 # ========================================================================= #
 # END                                                                       #

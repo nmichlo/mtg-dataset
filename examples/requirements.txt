@@ -2,3 +2,7 @@ matplotlib
 torch
 torchvision
 pytorch-lightning
+
+# run
+wandb
+disent
