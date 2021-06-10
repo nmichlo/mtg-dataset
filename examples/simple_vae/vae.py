@@ -288,6 +288,9 @@ if __name__ == '__main__':
 
     def main():
 
+        # settings:
+        # 5926MiB / 5932MiB (RTX2060)
+
         datamodule = Hdf5DataModule(
             'data/mtg_default-cards_20210608210352_border-crop_60480x224x160x3_c9.h5',
             val_ratio=0,
@@ -310,8 +313,8 @@ if __name__ == '__main__':
             # training options
             is_vae=True,
             recon_loss='mse_laplace',
-            recon_weight_mode='mean',
-            recon_weight_reduce='obs',
+            recon_weight_mode='none',
+            recon_weight_reduce='none',
             recon_weight_power=1,
             recon_weight_shift=False,
         )
