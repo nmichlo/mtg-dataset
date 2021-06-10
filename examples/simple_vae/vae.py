@@ -298,7 +298,7 @@ if __name__ == '__main__':
         )
 
         system = MtgVaeSystem(
-            lr=5e-4,
+            lr=3e-4,
             alpha=100,
             beta=0.01,
             # model options
@@ -324,15 +324,16 @@ if __name__ == '__main__':
             gpus=1,
             max_epochs=500,
             # checkpoint_callback=False,
+            resume_from_checkpoint='checkpoint_border/2021-06-09_23:14:25/epoch=37-step=69999.ckpt',
             logger=WandbLogger(
-                name=f'mtg-vae:{system.hparams.model_skip_mode}:{system.hparams.model_smooth_downsample}:{system.hparams.model_smooth_upsample}|{datamodule._batch_size}|{system.hparams.recon_loss}:{system.hparams.recon_weight_reduce}:{system.hparams.recon_weight_mode}',
+                name=f'mtg-vae__resume-69999:{system.hparams.model_skip_mode}:{system.hparams.model_smooth_downsample}:{system.hparams.model_smooth_upsample}|{datamodule._batch_size}|{system.hparams.recon_loss}:{system.hparams.recon_weight_reduce}:{system.hparams.recon_weight_mode}',
                 project='MTG',
             ),
             callbacks=[
                 WandbContextManagerCallback({**system.hparams, 'batch_size': datamodule._batch_size}),
                 VisualiseCallback(every_n_steps=500, log_wandb=True, log_local=False),
                 ModelCheckpoint(
-                    dirpath=os.path.join('checkpoint_border', datetime.datetime.now().strftime('%Y-%m-%d_%H:%M:%S')),
+                    dirpath=os.path.join('checkpoint_border__resume-69999', datetime.datetime.now().strftime('%Y-%m-%d_%H:%M:%S')),
                     monitor='recon',
                     every_n_train_steps=2500,
                     verbose=True,
