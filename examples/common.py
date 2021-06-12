@@ -236,6 +236,7 @@ def make_mtg_trainer(
     # utils
     checkpoint_period: int = 2500,
     checkpoint_dir: str = 'checkpoints',
+    checkpoint_monitor: str = 'loss',
     resume_from_checkpoint: str = None,
     # logging
     wandb=False,
@@ -254,7 +255,7 @@ def make_mtg_trainer(
         from pytorch_lightning.callbacks import ModelCheckpoint
         callbacks.append(ModelCheckpoint(
             dirpath=os.path.join(checkpoint_dir, time_str),
-            monitor='recon',
+            monitor=checkpoint_monitor,
             every_n_train_steps=checkpoint_period,
             verbose=True,
             save_top_k=5,
