@@ -25,7 +25,7 @@
 from typing import Optional
 import torch.nn as nn
 
-from examples.simple_vae.nn.helper import Activation
+from examples.simple_vae.nn.components import Activation
 from examples.simple_vae.nn.model import BaseAutoEncoder
 from examples.simple_vae.nn.model import ReprDown
 from examples.simple_vae.nn.model import ReprUp

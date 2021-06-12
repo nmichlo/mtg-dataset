@@ -23,141 +23,19 @@
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 
 import logging
-import os
-import warnings
-import datetime
 
-import numpy as np
 import pytorch_lightning as pl
 import torch
-import torch.nn.functional as F
-import wandb
-from disent.nn.functional import get_kernel_size
-from disent.nn.functional import torch_conv2d_channel_wise
-from disent.nn.functional import torch_conv2d_channel_wise_fft
-from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.loggers import WandbLogger
-from torch import nn
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from examples.common import Hdf5DataModule
-from examples.common import VisualiseCallback
+from examples.common import make_mtg_datamodule
+from examples.common import make_mtg_trainer
+from examples.simple_vae.nn.loss import LaplaceMseLoss
+from examples.simple_vae.nn.loss import mean_weighted_loss
+from examples.simple_vae.nn.loss import MseLoss
+from examples.simple_vae.nn.loss import SpatialFreqLoss
 from examples.simple_vae.nn.model_alt import AutoEncoderSkips
-
-
-def torch_laplace_kernel2d(size, sigma=1.0, normalise=True):
-    # make kernel
-    pos = torch.arange(size, dtype=torch.float32) - (size - 1) / 2
-    x, y = torch.meshgrid(pos, pos)
-    # compute values
-    norm = (x**2 + y**2) / (2 * sigma ** 2)
-    # compute kernel
-    kernel = - (2 - 2 * norm) * torch.exp(-norm) / (2 * np.pi * sigma ** 2)
-    if normalise:
-        kernel -= kernel.mean()
-        # kernel /= torch.abs(kernel).sum()
-    # return kernel
-    return kernel[None, None, :, :]
-
-
-class MseLoss(nn.Module):
-    def forward(self, x, target, reduction='mean'):
-        return F.mse_loss(x, target, reduction=reduction)
-
-
-class SpatialFreqLoss(nn.Module):
-    """
-    Modified from:
-    https://arxiv.org/pdf/1806.02336.pdf
-    """
-
-    def __init__(self, sigmas=(0.8, 1.6, 3.2), truncate=3, fft=True):
-        super().__init__()
-        assert len(sigmas) > 0
-        self._kernels = nn.ParameterList([
-            nn.Parameter(torch_laplace_kernel2d(get_kernel_size(sigma=sigma, truncate=truncate), sigma=sigma, normalise=True), requires_grad=False)
-            for sigma in sigmas
-        ])
-        print([k.shape for k in self._kernels])
-        self._n = len(self._kernels)
-        self._conv_fn = torch_conv2d_channel_wise_fft if fft else torch_conv2d_channel_wise
-
-    def forward(self, x, target, reduction='mean'):
-        loss_orig = F.mse_loss(x, target, reduction=reduction)
-        loss_freq = 0
-        for kernel in self._kernels:
-            loss_freq += F.mse_loss(self._conv_fn(x, kernel), self._conv_fn(target, kernel), reduction=reduction)
-        return (loss_orig + loss_freq) / (self._n + 1)
-
-
-class LaplaceMseLoss(nn.Module):
-    """
-    Modified from:
-    https://arxiv.org/pdf/1806.02336.pdf
-    """
-
-    def __init__(self, freq_ratio=0.5):
-        super().__init__()
-        self._ratio = freq_ratio
-        self._kernel = nn.Parameter(torch.as_tensor([
-            [0,  1,  0],
-            [1, -4,  1],
-            [0,  1,  0],
-        ], dtype=torch.float32), requires_grad=False)
-
-    def forward(self, x, target, reduction='mean'):
-        x_conv = torch_conv2d_channel_wise(x, self._kernel)
-        t_conv = torch_conv2d_channel_wise(target, self._kernel)
-        loss_orig = F.mse_loss(x, target, reduction=reduction)
-        loss_freq = F.mse_loss(x_conv, t_conv, reduction=reduction)
-        return (1 - self._ratio) * loss_orig + self._ratio * loss_freq
-
-
-# ========================================================================= #
-# Loss Reduction                                                            #
-# ========================================================================= #
-
-
-_REDUCE_DIMS = {
-    'none': None,
-    'chn': (   -3,       ),
-    'pix': (       -2, -1),
-    'obs': (   -3, -2, -1),
-    'bch': (0,           ),
-}
-
-_REDUCE_FNS = {
-    'mean': torch.mean,
-    'var': torch.var,
-    'std': torch.std,
-}
-
-
-def mean_weighted_loss(unreduced_loss, weight_mode: str = 'none', weight_reduce='obs', weight_shift=True, weight_power=1):
-    # exit early
-    if weight_mode == 'none':
-        if weight_reduce != 'none':
-            warnings.warn('`weight_reduce` has no effect when `weight_mode` == "none"')
-        return unreduced_loss.mean()
-    # generate weights
-    with torch.no_grad():
-        reduce_dims = _REDUCE_DIMS[weight_reduce]
-        reduce_fn = _REDUCE_FNS[weight_mode]
-        # get weights
-        if reduce_dims is None:
-            weights = unreduced_loss
-        else:
-            weights = reduce_fn(unreduced_loss, keepdim=True, dim=reduce_dims)
-        # shift
-        if weight_shift:
-            weights = weights - torch.min(weights)
-        if weight_power != 1:
-            weights = weights ** weight_power
-        # normalise weights
-        weights = (weights / weights.mean()).detach()
-    # compute version
-    return (unreduced_loss * weights).mean()
 
 
 # ========================================================================= #
@@ -187,8 +65,6 @@ class MtgVaeSystem(pl.LightningModule):
         model_skip_mode='next',
         model_smooth_upsample=False,
         model_smooth_downsample=False,
-        # training options
-        is_vae=True,
         # loss options
         recon_loss='mse',
         recon_weight_reduce='none',
@@ -236,11 +112,11 @@ class MtgVaeSystem(pl.LightningModule):
             "monitor": "recon",
         }
 
-    def forward(self, x, deterministic=True, return_dists=False):
-        return self.model.forward(x, deterministic=deterministic, return_dists=return_dists)
+    def forward(self, x):
+        return self.model.forward(x)
 
     def training_step(self, batch, batch_idx):
-        recon, posterior, prior = self.model.forward(batch, deterministic=not self.hparams.is_vae, return_dists=True)
+        recon, posterior, prior = self.model.forward_train(batch)
         # compute recon loss
         loss_recon = self.hparams.alpha * mean_weighted_loss(
             unreduced_loss=self._loss(recon, batch, reduction='none'),
@@ -250,10 +126,7 @@ class MtgVaeSystem(pl.LightningModule):
             weight_power=self.hparams.recon_weight_power,
         )
         # compute kl divergence
-        if self.hparams.is_vae:
-            loss_kl = self.hparams.beta * torch.distributions.kl_divergence(posterior, prior).mean()
-        else:
-            loss_kl = 0
+        loss_kl = self.hparams.beta * torch.distributions.kl_divergence(posterior, prior).mean()
         # combined loss
         loss = loss_recon + loss_kl
         # return loss
@@ -263,22 +136,6 @@ class MtgVaeSystem(pl.LightningModule):
         return loss
 
 
-class WandbContextManagerCallback(pl.Callback):
-
-    def __init__(self, keys_values):
-        self._keys_values = keys_values
-
-    def on_train_start(self, trainer: 'pl.Trainer', pl_module: 'pl.LightningModule') -> None:
-        print()
-        for k, v in self._keys_values.items():
-            setattr(wandb.config, f'model/{k}', v)
-            print(f'model/{k}:', repr(v))
-        print()
-
-    def on_train_end(self, trainer: 'pl.Trainer', pl_module: 'pl.LightningModule') -> None:
-        wandb.finish()
-
-
 # ========================================================================= #
 # RUN                                                                       #
 # ========================================================================= #
@@ -286,16 +143,10 @@ class WandbContextManagerCallback(pl.Callback):
 
 if __name__ == '__main__':
 
-    def main():
+    def main(data_path: str = None, resume_path: str = None):
 
         # settings:
         # 5926MiB / 5932MiB (RTX2060)
-
-        datamodule = Hdf5DataModule(
-            'data/mtg_default-cards_20210608210352_border-crop_60480x224x160x3_c9.h5',
-            val_ratio=0,
-            batch_size=32,
-        )
 
         system = MtgVaeSystem(
             lr=3e-4,
@@ -311,7 +162,6 @@ if __name__ == '__main__':
             model_smooth_downsample=True,
             model_smooth_upsample=True,
             # training options
-            is_vae=True,
             recon_loss='mse_laplace',
             recon_weight_mode='none',
             recon_weight_reduce='none',
@@ -319,35 +169,20 @@ if __name__ == '__main__':
             recon_weight_shift=False,
         )
 
-        # initialise model trainer
-        trainer = pl.Trainer(
-            gpus=1,
-            max_epochs=500,
-            # checkpoint_callback=False,
-            resume_from_checkpoint='checkpoint_border/2021-06-09_23:14:25/epoch=37-step=69999.ckpt',
-            logger=WandbLogger(
-                name=f'mtg-vae__resume-69999:{system.hparams.model_skip_mode}:{system.hparams.model_smooth_downsample}:{system.hparams.model_smooth_upsample}|{datamodule._batch_size}|{system.hparams.recon_loss}:{system.hparams.recon_weight_reduce}:{system.hparams.recon_weight_mode}',
-                project='MTG',
-            ),
-            callbacks=[
-                WandbContextManagerCallback({**system.hparams, 'batch_size': datamodule._batch_size}),
-                VisualiseCallback(every_n_steps=500, log_wandb=True, log_local=False),
-                ModelCheckpoint(
-                    dirpath=os.path.join('checkpoint_border__resume-69999', datetime.datetime.now().strftime('%Y-%m-%d_%H:%M:%S')),
-                    monitor='recon',
-                    every_n_train_steps=2500,
-                    verbose=True,
-                    save_top_k=5,
-                ),
-            ]
-        )
+        # get dataset & visualise images
+        datamodule = make_mtg_datamodule(batch_size=32, load_path=data_path)
+        vis_imgs = torch.stack([datamodule.data[i] for i in [3466, 18757, 20000, 40000, 21586, 20541, 1100]])
 
         # start training model
+        trainer = make_mtg_trainer(train_epochs=500, resume_from_checkpoint=resume_path, visualize_input=vis_imgs, visualize_input_is_images=True)
         trainer.fit(system, datamodule)
 
     # ENTRYPOINT
     logging.basicConfig(level=logging.INFO)
-    main()
+    main(
+        data_path='data/mtg_default-cards_20210608210352_border-crop_60480x224x160x3_c9.h5',
+        resume_path=None,
+    )
 
 
 # ========================================================================= #

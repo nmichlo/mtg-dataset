@@ -30,14 +30,8 @@ import torch
 import torch.nn as nn
 from torch.distributions import Normal
 
-
-# ========================================================================= #
-# HELPER                                                                    #
-# ========================================================================= #
-
-
-from examples.simple_vae.nn.helper import Activation
-from examples.simple_vae.nn.helper import NormalDist
+from examples.simple_vae.nn.components import Activation
+from examples.simple_vae.nn.components import NormalDist
 
 
 # ========================================================================= #
@@ -147,18 +141,24 @@ class BaseAutoEncoder(nn.Module):
         x_recon = self._dec(z)
         return x_recon
 
-    def forward(self, x, deterministic=True, return_dists=False):
+    def forward(self, x):
+        assert not self.training, 'model not in evaluation mode'
+        # deterministic forward if evaluating
         posterior = self.encode(x)
-        z = posterior.mean if deterministic else posterior.rsample()
+        z = posterior.mean
         recon = self.decode(z)
-        # return values
-        if return_dists:
-            return recon, posterior, self.make_prior(posterior)
         return recon
+
+    def forward_train(self, x):
+        assert self.training, 'model not in training mode'
+        # stochastic forward if training
+        posterior = self.encode(x)
+        z = posterior.rsample()
+        recon = self.decode(z)
+        return recon, posterior, self.make_prior(posterior)
 
 
 class AutoEncoder(BaseAutoEncoder):
-
     _enc = None
     _dec = None
 
