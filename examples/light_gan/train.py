@@ -2,52 +2,73 @@
 FROM: https://github.com/nocotan/pytorch-lightning-gans/blob/master/models/dcgan.py
 """
 import os
+import logging
 from collections import OrderedDict
-from datetime import datetime
+from typing import Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
-from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.core import LightningModule
-from pytorch_lightning.loggers import WandbLogger
+from torch.distributions import Normal
 from torch.utils.data import DataLoader
 from torchvision.datasets import MNIST
 
-from examples.common import ToTensor
-from examples.common import VisualiseCallback
-from mtgdata.util import Hdf5Dataset
+from examples.simple_vae.nn.components import PrintLayer
+
+
+logger = logging.getLogger(__name__)
+
+
+# ========================================================================= #
+# Generator                                                                 #
+# ========================================================================= #
 
 
 class Generator(nn.Module):
-    def __init__(self, latent_dim, img_shape):
+    def __init__(self, latent_dim, img_shape, final_activation='tanh'):
         super().__init__()
         self.img_shape = img_shape
 
-        self.init_size = img_shape[1] // 4
-        self.l1 = nn.Sequential(nn.Linear(latent_dim, 128 * self.init_size**2))
+        # size of downscaled image
+        C, H, W = img_shape
+        scale = 2**2
+        assert H % scale == 0
+        assert W % scale == 0
 
-        self.conv_blocks = nn.Sequential(
-            nn.BatchNorm2d(128),
+        final_act = {
+            'tanh': nn.Tanh(),
+            'sigmoid': nn.Sigmoid(),
+            'none': nn.Identity(),
+        }[final_activation]
+
+        self._generator = nn.Sequential(
+            # LINEAR NET
+            nn.Linear(in_features=latent_dim, out_features=128 * (H // scale) * (W // scale)),
+            nn.Unflatten(dim=-1, unflattened_size=[128, H // scale, W // scale]),
+            # CONV NET
+                nn.BatchNorm2d(128),
             nn.Upsample(scale_factor=2),
-            nn.Conv2d(128, 128, 3, stride=1, padding=1),
-            nn.BatchNorm2d(128, 0.8),
-            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(128, 0.8),
+                nn.LeakyReLU(0.2, inplace=True),
             nn.Upsample(scale_factor=2),
-            nn.Conv2d(128, 64, 3, stride=1, padding=1),
-            nn.BatchNorm2d(64, 0.8),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(64, img_shape[0], 3, stride=1, padding=1),
-            nn.Tanh(),
+            nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(64, 0.8),
+                nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(64, img_shape[0], kernel_size=3, stride=1, padding=1),
+                final_act,
         )
 
     def forward(self, z):
-        out = self.l1(z)
-        out = out.view(out.shape[0], 128, self.init_size, self.init_size)
-        img = self.conv_blocks(out)
-        return img
+        return self._generator(z)
+
+
+# ========================================================================= #
+# Discriminator                                                             #
+# ========================================================================= #
 
 
 class Discriminator(nn.Module):
@@ -55,156 +76,110 @@ class Discriminator(nn.Module):
         super(Discriminator, self).__init__()
 
         def discriminator_block(in_feat, out_feat, bn=True):
-            block = [nn.Conv2d(in_feat, out_feat, 3, 2, 1), nn.LeakyReLU(0.2, inplace=True), nn.Dropout2d(0.25)]
+            block = [
+                nn.Conv2d(in_feat, out_feat, kernel_size=3, stride=2, padding=1),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Dropout2d(0.25),
+            ]
             if bn:
                 block.append(nn.BatchNorm2d(out_feat, 0.8))
             return block
 
-        self.model = nn.Sequential(
+        # size of downscaled image
+        C, H, W = img_shape
+        scale = 2**4
+        assert H % scale == 0
+        assert W % scale == 0
+
+        self._discriminator = nn.Sequential(
+            # CONV LAYERS
             *discriminator_block(img_shape[0], 16, bn=False),
             *discriminator_block(16, 32),
             *discriminator_block(32, 64),
             *discriminator_block(64, 128),
+            # LINEAR LAYERS
+            nn.Flatten(),
+            nn.Linear(128 * (H // scale) * (W // scale), 1),
+            # this used to have a sigmoid output layer, but replaced with `F.binary_cross_entropy_with_logits`
         )
 
-        # The height and width of downsampled image
-        ds_size = img_shape[1] // 2**4
-        self.adv_layer = nn.Sequential(nn.Linear(128 * ds_size**2, 1), nn.Sigmoid())
+    def forward(self, img, activate=False):
+        out = self._discriminator(img)
+        if activate:
+            raise RuntimeError('sigmoid output has been replaced with `F.binary_cross_entropy_with_logits`')
+        return out
 
-    def forward(self, img):
-        out = self.model(img)
-        out = out.view(out.shape[0], -1)
-        validity = self.adv_layer(out)
 
-        return validity
+# ========================================================================= #
+# GAN                                                                       #
+# ========================================================================= #
 
 
 class DCGAN(LightningModule):
 
     def __init__(
         self,
-        latent_dim: int = 100,
+        latent_dim: int = 128,
         lr: float = 0.0002,
         b1: float = 0.5,
         b2: float = 0.999,
-        batch_size: int = 64, **kwargs
+        obs_shape: Tuple[int, int, int] = (1, 32, 32)
     ):
         super().__init__()
         self.save_hyperparameters()
-
-        self.latent_dim = latent_dim
-        self.lr = lr
-        self.b1 = b1
-        self.b2 = b2
-        self.batch_size = batch_size
-
         # networks
-        img_shape = (1, 32, 32)
-        self.generator = Generator(latent_dim=self.latent_dim, img_shape=img_shape)
-        self.discriminator = Discriminator(img_shape=img_shape)
-
-        self.validation_z = torch.randn(8, self.latent_dim)
-
-        self.example_input_array = torch.zeros(2, self.latent_dim)
+        self.generator = Generator(latent_dim=self.hparams.latent_dim, img_shape=self.hparams.obs_shape)
+        self.discriminator = Discriminator(img_shape=self.hparams.obs_shape)
+        # done
+        self.validation_z = self.sample_z(8)
+        # checks
+        assert self.dtype in (torch.float32, torch.float16)
 
     def forward(self, z):
         return self.generator(z)
 
-    def adversarial_loss(self, y_hat, y):
-        return F.binary_cross_entropy(y_hat, y)
+    @torch.no_grad()
+    def sample_z(self, batch_size: int):
+        return torch.randn(batch_size, self.hparams.latent_dim, dtype=self.dtype, device=self.device)
 
     def training_step(self, batch, batch_idx, optimizer_idx):
-        imgs, _ = batch
-
         # sample noise
-        z = torch.randn(imgs.shape[0], self.latent_dim)
-        z = z.type_as(imgs)
+        z = self.sample_z(batch_size=batch.shape[0])
 
-        # train generator
+        # improve the generator to fool the discriminator TODO: I don't think the discriminator should be updated here?
         if optimizer_idx == 0:
-
-            # generate images
-            self.generated_imgs = self(z)
-
             # log sampled images
-            sample_imgs = self.generated_imgs[:6]
-            grid = torchvision.utils.make_grid(sample_imgs)
-            self.logger.experiment.add_image('generated_images', grid, 0)
+            # sample_imgs = self.generated_imgs[:6]
+            # grid = torchvision.utils.make_grid(sample_imgs)
+            # self.logger.experiment.add_image('generated_images', grid, 0)
+            loss_gen = self.adversarial_loss(self.discriminator(self.generator(z)), is_real=True)
+            self.log('loss_gen', loss_gen, prog_bar=True)
+            return loss_gen
 
-            # ground truth result (ie: all fake)
-            # put on GPU because we created this tensor inside training_loop
-            valid = torch.ones(imgs.size(0), 1)
-            valid = valid.type_as(imgs)
+        # improve the discriminator to correctly identify the generator TODO: I don't think the generator should be updated here?
+        elif optimizer_idx == 1:
+            loss_real = self.adversarial_loss(self.discriminator(batch), is_real=True)
+            loss_fake = self.adversarial_loss(self.discriminator(self.forward(z).detach()), is_real=False)
+            loss_dsc = 0.5 * loss_real + 0.5 * loss_fake
+            self.log('loss_gen', loss_dsc, prog_bar=True)
+            return loss_dsc
 
-            # adversarial loss is binary cross-entropy
-            g_loss = self.adversarial_loss(self.discriminator(self(z)), valid)
-            tqdm_dict = {'g_loss': g_loss}
-            output = OrderedDict(
-                {
-                    'loss': g_loss,
-                    'progress_bar': tqdm_dict,
-                    'log': tqdm_dict
-                }
-            )
-            return output
-
-        # train discriminator
-        if optimizer_idx == 1:
-            # Measure discriminator's ability to classify real from generated samples
-
-            # how well can it label as real?
-            valid = torch.ones(imgs.size(0), 1)
-            valid = valid.type_as(imgs)
-
-            real_loss = self.adversarial_loss(self.discriminator(imgs), valid)
-
-            # how well can it label as fake?
-            fake = torch.zeros(imgs.size(0), 1)
-            fake = fake.type_as(imgs)
-
-            fake_loss = self.adversarial_loss(
-                self.discriminator(self(z).detach()), fake
-            )
-
-            # discriminator loss is the average of these
-            d_loss = (real_loss + fake_loss) / 2
-            tqdm_dict = {'d_loss': d_loss}
-            output = OrderedDict(
-                {
-                    'loss': d_loss,
-                    'progress_bar': tqdm_dict,
-                    'log': tqdm_dict
-                }
-            )
-            return output
+    def adversarial_loss(self, y_logits, is_real: bool):
+        # generate targets
+        gen_fn = (torch.ones if is_real else torch.zeros)
+        y_targ = gen_fn(len(y_logits), 1, device=self.device, dtype=y_logits.dtype)
+        # compute loss
+        return F.binary_cross_entropy_with_logits(y_logits, y_targ)
 
     def configure_optimizers(self):
-        lr = self.lr
-        b1 = self.b1
-        b2 = self.b2
-
-        opt_g = torch.optim.Adam(self.generator.parameters(), lr=lr, betas=(b1, b2))
-        opt_d = torch.optim.Adam(self.discriminator.parameters(), lr=lr, betas=(b1, b2))
+        opt_g = torch.optim.Adam(self.generator.parameters(), lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2))
+        opt_d = torch.optim.Adam(self.discriminator.parameters(), lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2))
         return [opt_g, opt_d], []
 
-    def train_dataloader(self):
-        transform = transforms.Compose(
-            [
-                transforms.Resize((32, 32)),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
-
-        dataset = MNIST(os.getcwd(), train=True, download=True, transform=transform)
-        return DataLoader(dataset, batch_size=self.batch_size)
-
+    @torch.no_grad()
     def on_epoch_end(self):
-        z = self.validation_z.to(self.device)
-
         # log sampled images
-        sample_imgs = self(z)
-        grid = torchvision.utils.make_grid(sample_imgs)
+        grid = torchvision.utils.make_grid(self.forward(self.validation_z))
         self.logger.experiment.add_image('generated_images', grid, self.current_epoch)
 
 
@@ -215,70 +190,28 @@ class DCGAN(LightningModule):
 
 if __name__ == '__main__':
 
-    def main(use_wandb=False):
+    def main(data_path: str = None, resume_path: str = None, wandb: bool = False):
+        from examples.common import make_mtg_datamodule
+        from examples.common import make_mtg_trainer
 
-        dataloader = DataLoader(
-            dataset=Hdf5Dataset(
-                h5_path='data/mtg-default_cards-normal-224x160x3.h5',
-                h5_dataset_name='data',
-                transform=ToTensor(move_channels=True),
-            ),
-            num_workers=os.cpu_count(),
-            batch_size=64,
-            shuffle=True,
-        )
+        # settings:
+        # 5878MiB / 5932MiB (RTX2060)
 
-        model = MtgSystem(
-            lr=1e-3,
-            beta=0.0001,
-            # model options
-            z_size=1024,
-            repr_hidden_size=None,  # 1536,
-            repr_channels=64,  # 32*5*7 = 1120, 44*5*7 = 1540, 56*5*7 = 1960
-            channel_mul=1.2,
-            channel_start=80,
-            model_all_skips=False,
-            model_smooth_upsample=False,
-            model_smooth_downsample=False,
-            # training options
-            is_vae=True,
-            recon_loss='mse_freq',
-            recon_weight_reduce='obs',
-            recon_weight_mode='distscale2',
-        )
+        system = DCGAN(obs_shape=(3, 224, 160))
+        vis_input = system.sample_z(8)
 
-        if use_wandb:
-            print()
-            for k, v in model.hparams.items():
-                setattr(wandb.config, f'model/{k}', v)
-                print(f'model/{k}:', repr(v))
-            print()
+        # start training model
+        datamodule = make_mtg_datamodule(batch_size=32, load_path=data_path)
+        trainer = make_mtg_trainer(train_epochs=500, visualize_period=500, resume_from_checkpoint=resume_path, visualize_input=vis_input, visualize_input_is_images=False, wandb=wandb, wandb_project='MTG-GAN', wandb_name='MTG-GAN')
+        trainer.fit(system, datamodule)
 
-        trainer = pl.Trainer(
-            gpus=1,
-            max_epochs=500,
-            # checkpoint_callback=False,
-            logger=WandbLogger(
-                name=f'mtg-gan|{model.hparams.recon_loss}:{model.hparams.recon_weight_reduce}:{model.hparams.recon_weight_mode}',
-                project='MTG'
-            ) if use_wandb else False,
-            callbacks=[
-                VisualiseCallback(every_n_steps=500, use_wandb=use_wandb),
-                ModelCheckpoint(
-                    dirpath=os.path.join('checkp', datetime.datetime.now().strftime('%Y-%m-%d_%H:%M:%S')),
-                    monitor='recon',
-                    every_n_train_steps=2500,
-                    verbose=True,
-                    save_top_k=5,
-                ),
-            ]
-        )
-
-        trainer.fit(model, dataloader)
-
-
-    # RUN
-    main(use_wandb=True)
+    # ENTRYPOINT
+    logging.basicConfig(level=logging.INFO)
+    main(
+        data_path='data/mtg_default-cards_20210608210352_border-crop_60480x224x160x3_c9.h5',
+        resume_path=None,
+        wandb=True,
+    )
 
 
 # ========================================================================= #
