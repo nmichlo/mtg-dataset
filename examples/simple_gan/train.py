@@ -1,22 +1,16 @@
 """
-FROM: https://github.com/nocotan/pytorch-lightning-gans/blob/master/models/dcgan.py
+port and customised version of:
+https://github.com/nocotan/pytorch-lightning-gans/blob/master/models/dcgan.py
 """
-import os
+
 import logging
-from collections import OrderedDict
 from typing import Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
-import torchvision.transforms as transforms
 from pytorch_lightning.core import LightningModule
-from torch.distributions import Normal
-from torch.utils.data import DataLoader
-from torchvision.datasets import MNIST
-
-from examples.simple_vae.nn.components import PrintLayer
 
 
 logger = logging.getLogger(__name__)
@@ -123,15 +117,14 @@ class DCGAN(LightningModule):
         lr: float = 0.0002,
         b1: float = 0.5,
         b2: float = 0.999,
-        obs_shape: Tuple[int, int, int] = (1, 32, 32)
+        obs_shape: Tuple[int, int, int] = (1, 32, 32),
+        final_activation: str = 'sigmoid',  # originally tanh
     ):
         super().__init__()
         self.save_hyperparameters()
         # networks
-        self.generator = Generator(latent_dim=self.hparams.latent_dim, img_shape=self.hparams.obs_shape)
+        self.generator = Generator(latent_dim=self.hparams.latent_dim, img_shape=self.hparams.obs_shape, final_activation=self.hparams.final_activation)
         self.discriminator = Discriminator(img_shape=self.hparams.obs_shape)
-        # done
-        self.validation_z = self.sample_z(8)
         # checks
         assert self.dtype in (torch.float32, torch.float16)
 
@@ -148,10 +141,6 @@ class DCGAN(LightningModule):
 
         # improve the generator to fool the discriminator TODO: I don't think the discriminator should be updated here?
         if optimizer_idx == 0:
-            # log sampled images
-            # sample_imgs = self.generated_imgs[:6]
-            # grid = torchvision.utils.make_grid(sample_imgs)
-            # self.logger.experiment.add_image('generated_images', grid, 0)
             loss_gen = self.adversarial_loss(self.discriminator(self.generator(z)), is_real=True)
             self.log('loss_gen', loss_gen, prog_bar=True)
             return loss_gen
@@ -161,7 +150,9 @@ class DCGAN(LightningModule):
             loss_real = self.adversarial_loss(self.discriminator(batch), is_real=True)
             loss_fake = self.adversarial_loss(self.discriminator(self.forward(z).detach()), is_real=False)
             loss_dsc = 0.5 * loss_real + 0.5 * loss_fake
-            self.log('loss_gen', loss_dsc, prog_bar=True)
+            self.log('loss_real', loss_real, prog_bar=False)
+            self.log('loss_fake', loss_fake, prog_bar=False)
+            self.log('loss_dsc', loss_dsc, prog_bar=True)
             return loss_dsc
 
     def adversarial_loss(self, y_logits, is_real: bool):
@@ -182,6 +173,11 @@ class DCGAN(LightningModule):
         grid = torchvision.utils.make_grid(self.forward(self.validation_z))
         self.logger.experiment.add_image('generated_images', grid, self.current_epoch)
 
+    # log sampled images -- TODO: this could be used in the vis callback!
+    # sample_imgs = self.generated_imgs[:6]
+    # grid = torchvision.utils.make_grid(sample_imgs)
+    # self.logger.experiment.add_image('generated_images', grid, 0)
+
 
 # ========================================================================= #
 # RUN                                                                       #
@@ -196,7 +192,6 @@ if __name__ == '__main__':
 
         # settings:
         # 5878MiB / 5932MiB (RTX2060)
-
         system = DCGAN(obs_shape=(3, 224, 160))
         vis_input = system.sample_z(8)
 

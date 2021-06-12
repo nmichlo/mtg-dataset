@@ -119,9 +119,16 @@ class BaseAutoEncoder(nn.Module):
         self._posterior_layer = NormalDist()
 
     def _enc(self, x):
+        # this should take in a tensor of shape (B, C, H, W)
+        # this should return a tensor of shape (B, 2 * LATENTS)
+        # -> this is then wrapped with a normal distribution,
+        #    the first half are the means, the second hald are
+        #    the log(variances)
         raise NotImplementedError
 
     def _dec(self, z):
+        # this should take in a tensor of shape (B, LATENTS)
+        # this should return a tensor of shape (B, C, H, W)
         raise NotImplementedError
 
     def make_prior(self, posterior: Normal):
