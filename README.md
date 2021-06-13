@@ -59,7 +59,13 @@ command line approach.
 ```python3
 from mtgdata import ScryfallDataset 
 
-data = ScryfallDataset()
+data = ScryfallDataset(
+    img_type='border_crop',
+    bulk_type='default_cards',
+    transform=None,
+)
+
+# you can access the dataset elements like usual
 ```
 
 ### Proxy Issues?
@@ -69,7 +75,7 @@ probably go out of date. You can override the *default* scrape logic used by the
 logic  by registering a new scrape function.
 
 ```python3
-from mtgdata.utils.proxy import register_proxy_scraper
+from mtgdata.util.proxy import register_proxy_scraper
 from typing import List, Dict
 
 @register_proxy_scraper(name='my_proxy_source', is_default=True)
@@ -89,6 +95,8 @@ def custom_proxy_scraper(proxy_type: str) -> List[Dict[str, str]]:
 
 ## 🔄 &nbsp;Convert Images to an HDF5 Dataset
 
+### Command Line
+
 The images can be convert to hdf5 format by running the file `mtgdata.scryfall_convert`.
 Various arguments can be specified, please see the argparse arguments at the bottom of
 the file for more information.
@@ -99,17 +107,38 @@ python3 mtgdata/scryfall_convert.py
 
 The resulting data file will have the `data` key corresponding to the images data.
 
+### Programmatically
+
+Alternatively you can convert and generate the hdf5 dataset from within python by simply calling
+the `mtgdata.scryfall_convert.generate_converted_dataset` function. Similar arguments can be specified
+as that of the command line approach.
+
+```python3
+from mtgdata import generate_converted_dataset 
+
+generate_converted_dataset(
+    out_img_type='border_crop',
+    out_bulk_type='default_cards',
+    save_root='./data/converted/',
+    out_obs_size=(224, 160),
+    convert_speed_test=True,
+)
+```
+
+### Loading The Data
+
 We provide a helper dataset class for loading this generated file.
 
 ```python3
 from torch.utils.data import DataLoader
-from mtgdata.util import Hdf5Dataset
+from mtgdata import Hdf5Dataset
 
 
 # this h5py dataset supports pickling, and can be wrapped with a pytorch dataset.
 data = Hdf5Dataset(
-    h5_path='data/mtg-default_cards-normal-60459x224x160x3.h5',
+    h5_path='data/converted/mtg-default_cards-normal-60459x224x160x3.h5',  # name will differ
     h5_dataset_name='data',
+    transform=None,
 )
 
 # you can wrap the dataset with a pytorch dataloader like usual, and specify more than one worker

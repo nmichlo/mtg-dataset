@@ -106,10 +106,7 @@ def dataset_save_as_hdf5(
     Re-save the given Scryfall dataset as an HDF5 file.
     - the hdf5 file will have the key `data`
     """
-    try:
-        from torch.utils.data import DataLoader
-    except:
-        raise ImportError('please install pytorch if you wish to convert the dataset.')
+    from torch.utils.data import DataLoader
     # defaults & checks
     if img_shape is None:
         img_shape = data.img_shape
