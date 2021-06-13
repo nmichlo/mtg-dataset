@@ -6,10 +6,12 @@ from functools import lru_cache
 from typing import Any
 from typing import Dict
 from typing import Optional
+from typing import Sequence
 
 import numpy as np
 import pytorch_lightning as pl
 import torch
+import wandb
 from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
 from torch.utils.data import random_split
@@ -223,7 +225,6 @@ def make_mtg_datamodule(
         num_workers=num_workers,
     )
 
-
 def make_mtg_trainer(
     # training
     train_epochs: int = None,
@@ -236,12 +237,13 @@ def make_mtg_trainer(
     # utils
     checkpoint_period: int = 2500,
     checkpoint_dir: str = 'checkpoints',
-    checkpoint_monitor: str = 'loss',
+    checkpoint_monitor: Optional[str] = 'loss',
     resume_from_checkpoint: str = None,
     # logging
     wandb=False,
     wandb_name: str = None,
     wandb_project: str = None,
+    wandb_kwargs: dict = None,
 ):
     time_str = datetime.now().strftime('%Y-%m-%d_%H:%M:%S')
 
@@ -258,7 +260,7 @@ def make_mtg_trainer(
             monitor=checkpoint_monitor,
             every_n_train_steps=checkpoint_period,
             verbose=True,
-            save_top_k=5,
+            save_top_k=None if (checkpoint_monitor is None) else 5,
         ))
 
     # initialise logger
@@ -267,7 +269,7 @@ def make_mtg_trainer(
         assert isinstance(wandb_name, str) and wandb_name, f'`wandb_name` must be a non-empty str, got: {repr(wandb_name)}'
         assert isinstance(wandb_project, str) and wandb_project, f'`wandb_project` must be a non-empty str, got: {repr(wandb_project)}'
         from pytorch_lightning.loggers import WandbLogger
-        logger = WandbLogger(name=f'{time_str}:{wandb_name}', project=wandb_project)
+        logger = WandbLogger(name=f'{time_str}:{wandb_name}', project=wandb_project, **(wandb_kwargs if (wandb_kwargs is not None) else {}))
 
     # initialise model trainer
     return pl.Trainer(
