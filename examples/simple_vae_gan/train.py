@@ -20,11 +20,11 @@ import logging
 from typing import Tuple
 
 import numpy as np
-import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from examples.common import BaseLightningModule
 from examples.simple_vae.nn.loss import LaplaceMseLoss
 from examples.simple_vae.nn.loss import MseLoss
 
@@ -44,7 +44,11 @@ def activation():
 
 def norm(feat, bn=True):
     if bn:
-        return nn.BatchNorm2d(feat)
+        # (1-momentum) ** steps = remaining_ratio
+        # 1 - remaining_ratio ** (1/steps)
+        # 1 - 0.01 ** (1/100) ~= 0.045
+        # 1 - 0.01 ** (1/250) ~= 0,01825
+        return nn.BatchNorm2d(feat, momentum=0.045)
     else:
         return nn.Identity()
 
@@ -85,7 +89,7 @@ class GeneratorBody(nn.Module):
             return nn.Sequential(
                 nn.Upsample(scale_factor=2),
                 nn.Conv2d(in_feat, out_feat, kernel_size=3, stride=1, padding=1),
-                    norm(out_feat, bn=bn),
+                    # norm(out_feat, bn=bn),
                     activation(),
             )
 
@@ -96,8 +100,8 @@ class GeneratorBody(nn.Module):
         self._generator = nn.Sequential(
             nn.Unflatten(dim=-1, unflattened_size=[in_features[0], H // scale, W // scale]),
             # CONV NET
-            # nn.BatchNorm2d(in_features[0]),
-            *(upsample_block(inp, out, bn=i < len(in_features) - 1) for i, (inp, out) in enumerate(zip(in_features[:-1], in_features[1:]))),
+            norm(in_features[0]),
+            *(upsample_block(inp, out, bn=i < len(in_features) - 2) for i, (inp, out) in enumerate(zip(in_features[:-1], in_features[1:]))),
             # PIXELS
             nn.Conv2d(pix_in_features, C, kernel_size=3, stride=1, padding=1),
             final_act,
@@ -175,7 +179,12 @@ class SharedGanAutoEncoder(nn.Module):
     def forward(self, x):
         return self.decode(self.encode(x))
 
-    # Parameters:
+    def forward_stochastic(self, x):
+        z = self.encode(x)
+        z += torch.randn_like(z)
+        return self.decode(z)
+
+    # PARAMETERS:
 
     @property
     def params_ae(self):
@@ -183,17 +192,11 @@ class SharedGanAutoEncoder(nn.Module):
 
     @property
     def params_gen(self):
-        modules = [self._generator_head, self._generator_body]
-        if self._gen_params_include_enc:
-            modules += [self._encoder_head] if self._share_enc_dsc else [self._encoder_body, self._encoder_head]
-        return nn.ModuleList(modules).parameters()
+        return self.params_ae if self._params_enc_in_gen_step else nn.ModuleList([self._generator_head, self._generator_body]).parameters()
 
     @property
     def params_dsc(self):
-        return nn.ModuleList([
-            self._discriminator_body,
-            self._discriminator_head,
-        ]).parameters()
+        return nn.ModuleList([self._discriminator_body, self._discriminator_head]).parameters()
 
     # INIT:
 
@@ -205,30 +208,27 @@ class SharedGanAutoEncoder(nn.Module):
         dsc_features: Tuple[int, ...] = (16, 32, 64, 128, 192),
         gen_features: Tuple[int, ...] = (256, 256, 192, 128, 96),
         gen_features_pix: int = 64,
-        # parameter settings
-        share_enc_dsc: bool = True,
-        gen_params_include_enc: bool = False,
+        params_enc_in_gen_step: bool = False,
 
     ):
         super().__init__()
+        assert params_enc_in_gen_step is False
         assert len(obs_shape) == 3
-        # params
-        self._share_enc_dsc = share_enc_dsc
-        self._gen_params_include_enc = gen_params_include_enc
+        self._params_enc_in_gen_step = params_enc_in_gen_step
         # models
         self._generator_body     = GeneratorBody(img_shape=obs_shape, final_activation='none', in_features=gen_features, pix_in_features=gen_features_pix)
         self._generator_head     = DiscriminatorHead(in_size=z_size, hidden_size=hidden_size, out_size=self._generator_body.in_size)
         self._discriminator_body = DiscriminatorBody(img_shape=obs_shape, out_features=dsc_features)
-        self._encoder_body       = DiscriminatorBody(img_shape=obs_shape, out_features=dsc_features) if (not share_enc_dsc) else self._discriminator_body
+        self._encoder_body       = DiscriminatorBody(img_shape=obs_shape, out_features=dsc_features)  # TODO: shared, if this is replaced with the discriminator_body
         self._encoder_head       = DiscriminatorHead(in_size=self._discriminator_body.out_size, hidden_size=hidden_size, out_size=z_size)
         self._discriminator_head = DiscriminatorHead(in_size=self._discriminator_body.out_size, hidden_size=hidden_size, out_size=1)
         # count params
-        print(f'\n- generator_body:     params, trainable: {count_params(self._generator_body, True)} fixed: {count_params(self._generator_body, False)}')
-        print(f'- generator_head:     params, trainable: {count_params(self._generator_head, True)} fixed: {count_params(self._generator_head, False)}')
-        print(f'- encoder_body:       params, trainable: {count_params(self._encoder_body, True)} fixed: {count_params(self._encoder_body, False)}')
-        print(f'- encoder_head:       params, trainable: {count_params(self._encoder_head, True)} fixed: {count_params(self._encoder_head, False)}')
-        print(f'- discriminator_body: params, trainable: {count_params(self._discriminator_body, True)} fixed: {count_params(self._discriminator_body, False)}')
-        print(f'- discriminator_head: params, trainable: {count_params(self._discriminator_head, True)} fixed: {count_params(self._discriminator_head, False)}\n')
+        print(f'\n- params: generator_body     | trainable = {count_params(self._generator_body, True)} | non-trainable = {count_params(self._generator_body, False)}')
+        print(f'- params: generator_head     | trainable = {count_params(self._generator_head, True)} | non-trainable = {count_params(self._generator_head, False)}')
+        print(f'- params: encoder_body       | trainable = {count_params(self._encoder_body, True)} | non-trainable = {count_params(self._encoder_body, False)}')
+        print(f'- params: encoder_head       | trainable = {count_params(self._encoder_head, True)} | non-trainable = {count_params(self._encoder_head, False)}')
+        print(f'- params: discriminator_body | trainable = {count_params(self._discriminator_body, True)} | non-trainable = {count_params(self._discriminator_body, False)}')
+        print(f'- params: discriminator_head | trainable = {count_params(self._discriminator_head, True)} | non-trainable = {count_params(self._discriminator_head, False)}\n')
 
     def discriminate(self, x):
         return self._discriminator_head(self._discriminator_body(x))
@@ -236,13 +236,11 @@ class SharedGanAutoEncoder(nn.Module):
     def generate(self, z):
         return self.decode(z)
 
-    def generate_discriminate(self, z):
-        return self.discriminate(self.generate(z))
-
 
 # ========================================================================= #
 # GAN                                                                       #
 # ========================================================================= #
+
 
 def features(start, end, num):
     import numpy as np
@@ -270,36 +268,33 @@ def count_params(model, trainable=None):
     return f'{p/mul:5.1f}{symbol}'
 
 
-class SimpleVaeGan(pl.LightningModule):
+class SimpleVaeGan(BaseLightningModule):
 
     def __init__(
         self,
+        obs_shape: Tuple[int, int, int] = (3, 224, 160),
+        # optimizer
+        lr: float = 0.0005,
+        adam_betas: float = (0.5, 0.999),
+        # features
         z_size: int = 256,
         hidden_size: int = 384,
-        obs_shape: Tuple[int, int, int] = (3, 224, 160),
-        lr: float = 0.0003,
-        adam_betas: float = (0.5, 0.999),
-        ae_alpha=10.0,
-        ae_beta=0.003,
-        recon_loss='mse',
-        # features
         dsc_features: Tuple[int, ...] = features(16, 128, num=5),
         gen_features: Tuple[int, ...] = features(128, 48, num=5),
         gen_features_pix: int = 32,
-        # share dsc & ae
-        share_enc_dsc: bool = False,
+        # auto-encoder loss
+        train_ae: bool = True,
+        ae_recon_loss='mse',
+        ae_beta=0.003,
         # loss components
-        ae_loss_step: bool = True,              # helps
-        gen_loss_include_recons: bool = False,  # generally conflicts
-        dsc_loss_include_recons: bool = False,  # generally conflicts
-        gen_params_include_enc: bool  = False,  # generally conflicts
-        # TRY
-        # (gen_loss_include_recons=False, dsc_loss_include_recons=True),
-        # (gen_loss_include_recons=False, dsc_loss_include_recons=False)
+        adversarial_sample: bool = True,
+        adversarial_recons: bool = False,
+        adversarial_recons_train_enc: bool = False,  # only applies when adversarial_recons=True, adversarial_recons=True
     ):
         super().__init__()
         self.save_hyperparameters()
         # checks
+        assert adversarial_recons_train_enc is False
         assert len(self.hparams.obs_shape) == 3
         # combined network
         self.sgan = SharedGanAutoEncoder(
@@ -309,18 +304,20 @@ class SimpleVaeGan(pl.LightningModule):
             dsc_features=self.hparams.dsc_features,
             gen_features=self.hparams.gen_features,
             gen_features_pix=self.hparams.gen_features_pix,
-            share_enc_dsc=self.hparams.share_enc_dsc,
-            gen_params_include_enc=self.hparams.gen_params_include_enc
+            params_enc_in_gen_step=self.hparams.adversarial_recons_train_enc and self.hparams.adversarial_recons,
         )
         # checks
         assert self.dtype in (torch.float32, torch.float16)
         # loss function
-        if self.hparams.recon_loss == 'mse':
+        if self.hparams.ae_recon_loss == 'mse':
             self._loss = MseLoss()
-        elif self.hparams.recon_loss == 'mse_laplace':
+        elif self.hparams.ae_recon_loss == 'mse_laplace':
             self._loss = LaplaceMseLoss(freq_ratio=0.25)
         else:
-            raise KeyError(f'invalid recon_loss: {self.hparams.recon_loss}')
+            raise KeyError(f'invalid ae_recon_loss: {self.hparams.ae_recon_loss}')
+        # number of loss components
+        self._loss_count = (1 if self.hparams.adversarial_sample else 0) + (1 if self.hparams.adversarial_recons else 0)
+        assert self._loss_count > 0, 'both `adversarial_sample` and `adversarial_recons` cannot be False'
 
     @torch.no_grad()
     def sample_z(self, batch_size: int):
@@ -336,69 +333,63 @@ class SimpleVaeGan(pl.LightningModule):
             return self.sgan.generate(x_or_z)
 
     def training_step(self, batch, batch_idx, optimizer_idx):
-        # sample noise
-        z = self.sample_z(batch_size=batch.shape[0])
+        B, _, _, _ = batch.shape
 
-        # improve the AE
+        # improve auto-encoder
         if optimizer_idx == 0:
-            if not self.hparams.ae_loss_step:
+            # skip the step
+            if not self.hparams.train_ae:
                 return None
-            # compute ae loss
-            recon, ae_loss, ae_loss_rec, ae_loss_reg = self._train_stochastic_ae_forward(batch)
-            self.log('ae_loss_rec', ae_loss_rec, prog_bar=False)
-            self.log('ae_loss_reg', ae_loss_reg, prog_bar=False)
-            self.log('ae_loss',     ae_loss,     prog_bar=False); self.log('a', ae_loss, prog_bar=True)
+            # auto-encoder loss
+            recon, ae_loss, ae_loss_rec, ae_loss_reg = self._train_stochastic_ae_forward(batch, True)
+            self.log('ae_loss_rec',     ae_loss_rec,     prog_bar=False)
+            self.log('ae_loss_reg',     ae_loss_reg,     prog_bar=False)
+            self.log('ae_loss',         ae_loss,         prog_bar=False)
             return ae_loss
 
         # improve the generator to fool the discriminator
-        elif optimizer_idx == 1:
-            # compute gan loss over generator
-            loss_gen_sample = self.adversarial_loss(self.sgan.generate_discriminate(z), is_real=True)
-            # compute gan loss over auto-encoder
-            if self.hparams.gen_loss_include_recons:
-                loss_gen_recons = self.adversarial_loss(self.sgan.discriminate(self.sgan.forward(batch)), is_real=True)  # self.sgan.encode_generate_discriminate_train(batch)
-                loss_gen = 0.5 * (loss_gen_sample + loss_gen_recons)
-            else:
-                loss_gen_recons = 0
-                loss_gen = loss_gen_sample
-            # return final loss
+        elif optimizer_idx == 2:
+            # compute gan loss over generator & auto-encoder
+            loss_gen_sample = 0 if not self.hparams.adversarial_sample else self.adversarial_loss(self.sgan.discriminate(self.sgan.generate(self.sample_z(batch_size=B))), is_real=True)
+            loss_gen_recons = 0 if not self.hparams.adversarial_recons else self.adversarial_loss(self.sgan.discriminate(self._train_stochastic_ae_forward(batch, False)), is_real=True)
+            loss_gen = (loss_gen_sample + loss_gen_recons) / self._loss_count
+            # return loss
             self.log('loss_gen_recons', loss_gen_recons, prog_bar=False)
             self.log('loss_gen_sample', loss_gen_sample, prog_bar=False)
-            self.log('loss_gen',        loss_gen,        prog_bar=False); self.log('g', loss_gen, prog_bar=True)
+            self.log('loss_gen',        loss_gen,        prog_bar=False)
             return loss_gen
 
         # improve the discriminator to correctly identify the generator
-        elif optimizer_idx == 2:
+        elif optimizer_idx == 1:
             # compute dsc loss over generator & batch
-            loss_fake_sample = self.adversarial_loss(self.sgan.generate_discriminate(z), is_real=False)
-            loss_real_batch  = self.adversarial_loss(self.sgan.discriminate(batch),      is_real=True)
-            # compute dsc loss over auto-encoder
-            if self.hparams.dsc_loss_include_recons:
-                with torch.no_grad():
-                    recon = self.sgan.forward(batch)
-                loss_fake_recons = self.adversarial_loss(self.sgan.discriminate(recon), is_real=False)  # self.sgan.encode_generate_discriminate_train(batch)
-                loss_dsc = 0.25 * (loss_fake_sample + loss_fake_recons) + 0.5 * loss_real_batch
-            else:
-                loss_fake_recons = 0
-                loss_dsc = 0.5 * loss_fake_sample + 0.5 * loss_real_batch
+            loss_real_batch  = self.adversarial_loss(self.sgan.discriminate(batch), is_real=True)
+            loss_fake_sample = 0 if not self.hparams.adversarial_sample else self.adversarial_loss(self.sgan.discriminate(self.sgan.generate(self.sample_z(batch_size=B))), is_real=False)
+            loss_fake_recons = 0 if not self.hparams.adversarial_recons else self.adversarial_loss(self.sgan.discriminate(self._no_grad_stochastic_ae_forward(batch, False)), is_real=False)
+            loss_dsc = 0.5 * (loss_real_batch + (loss_fake_sample + loss_fake_recons) / self._loss_count)
             # return loss
             self.log('loss_dsc_fake_sample', loss_fake_sample, prog_bar=False)
             self.log('loss_dsc_fake_recons', loss_fake_recons, prog_bar=False)
             self.log('loss_dsc_real_batch',  loss_real_batch,  prog_bar=False)
-            self.log('loss_dsc',             loss_dsc,         prog_bar=False); self.log('d', loss_dsc, prog_bar=True)
+            self.log('loss_dsc',             loss_dsc,         prog_bar=False)
             return loss_dsc
 
-    def _train_stochastic_ae_forward(self, batch):
+    def _train_stochastic_ae_forward(self, batch, compute_loss: bool = True):
         # feed forward with noise
         z = self.sgan.encode(batch)
-        # z + torch.randn_like(z)
+        # z += torch.randn_like(z)
         recon = self.sgan.decode(z)
         # compute recon loss & regularizer -- like KL for sigma = 1, MSE from zero
-        loss_rec = self.hparams.ae_alpha * self._loss(recon, batch, reduction='mean')
-        loss_reg = self.hparams.ae_beta * (z ** 2).mean()
-        loss = loss_rec + loss_reg
-        # return all values...
-        return recon, loss, loss_rec, loss_reg
+        if compute_loss:
+            loss_rec = self._loss(recon, batch, reduction='mean')
+            loss_reg = self.hparams.ae_beta * (z ** 2).mean()
+            loss = loss_rec + loss_reg
+            # return all values...
+            return recon, loss, loss_rec, loss_reg
+        return recon
+
+    @torch.no_grad()
+    def _no_grad_stochastic_ae_forward(self, batch, compute_loss: bool = True):
+        return self._train_stochastic_ae_forward(batch, compute_loss=compute_loss)
 
     def adversarial_loss(self, y_logits, is_real: bool):
         # get targets
@@ -408,10 +399,10 @@ class SimpleVaeGan(pl.LightningModule):
         return F.binary_cross_entropy_with_logits(y_logits, y_targ, reduction='mean')
 
     def configure_optimizers(self):
-        opt_ae  = torch.optim.Adam(self.sgan.params_ae,  lr=self.hparams.lr, betas=self.hparams.adam_betas)
-        opt_gen = torch.optim.Adam(self.sgan.params_gen, lr=self.hparams.lr, betas=self.hparams.adam_betas)
+        opt_ae = torch.optim.Adam(self.sgan.params_ae, lr=self.hparams.lr, betas=self.hparams.adam_betas)
         opt_dsc = torch.optim.Adam(self.sgan.params_dsc, lr=self.hparams.lr, betas=self.hparams.adam_betas)
-        return [opt_ae, opt_gen, opt_dsc], []
+        opt_gen = torch.optim.Adam(self.sgan.params_gen, lr=self.hparams.lr, betas=self.hparams.adam_betas)
+        return [opt_ae, opt_dsc, opt_gen], []
 
 
 # ========================================================================= #
@@ -433,22 +424,28 @@ if __name__ == '__main__':
             # dsc_features = features(32, 256, num=5),
             # gen_features = features(256, 128, num=5),
             # gen_features_pix = 96,
+
+            z_size=256,
+            hidden_size=384,
+            dsc_features=features(32, 160, num=5),
+            gen_features=features(160, 48, num=5),
+            gen_features_pix=32,
+        )
+
+        # get dataset & visualise images
+        datamodule = make_mtg_datamodule(
+            batch_size=96+16+4,
+            load_path=data_path,
         )
         vis_input = system.sample_z(8)
+        vis_imgs = torch.stack([datamodule.data[i] for i in [3466, 18757, 20000, 40000, 21586, 20541, 1100]])
 
         # start training model
-        datamodule = make_mtg_datamodule(batch_size=32, load_path=data_path)
         trainer = make_mtg_trainer(
             train_epochs=500,
-            visualize_period=500,
-            resume_from_checkpoint=resume_path,
-            visualize_input=vis_input,
-            visualize_input_is_images=False,
-            wandb=wandb,
-            wandb_project='MTG-GAN',
-            wandb_name='MTG-GAN',
-            wandb_kwargs=dict(tags=['medium']),
-            checkpoint_monitor=None,
+            visualize_period=500, visualize_input={'samples': vis_input, 'recons': vis_imgs},
+            wandb=wandb, wandb_project='MTG-GAN', wandb_name='MTG-GAN', wandb_kwargs=dict(tags=['medium']),
+            checkpoint_monitor=None, resume_from_checkpoint=resume_path,
         )
         trainer.fit(system, datamodule)
 

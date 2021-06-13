@@ -197,7 +197,7 @@ if __name__ == '__main__':
 
         # start training model
         datamodule = make_mtg_datamodule(batch_size=32, load_path=data_path)
-        trainer = make_mtg_trainer(train_epochs=500, visualize_period=500, resume_from_checkpoint=resume_path, visualize_input=vis_input, visualize_input_is_images=False, wandb=wandb, wandb_project='MTG-GAN', wandb_name='MTG-GAN')
+        trainer = make_mtg_trainer(train_epochs=500, visualize_period=500, resume_from_checkpoint=resume_path, visualize_input={'samples': vis_input}, wandb=wandb, wandb_project='MTG-GAN', wandb_name='MTG-GAN')
         trainer.fit(system, datamodule)
 
     # ENTRYPOINT

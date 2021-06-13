@@ -29,6 +29,7 @@ import torch
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
+from examples.common import BaseLightningModule
 from examples.common import make_mtg_datamodule
 from examples.common import make_mtg_trainer
 from examples.simple_vae.nn.loss import LaplaceMseLoss
@@ -43,13 +44,7 @@ from examples.simple_vae.nn.model_alt import AutoEncoderSkips
 # ========================================================================= #
 
 
-class MtgVaeSystem(pl.LightningModule):
-
-    def get_progress_bar_dict(self):
-        # https://github.com/PyTorchLightning/pytorch-lightning/issues/1595
-        tqdm_dict = super().get_progress_bar_dict()
-        tqdm_dict.pop("v_num", None)
-        return tqdm_dict
+class MtgVaeSystem(BaseLightningModule):
 
     def __init__(
         self,
@@ -174,7 +169,7 @@ if __name__ == '__main__':
         vis_imgs = torch.stack([datamodule.data[i] for i in [3466, 18757, 20000, 40000, 21586, 20541, 1100]])
 
         # start training model
-        trainer = make_mtg_trainer(train_epochs=500, resume_from_checkpoint=resume_path, visualize_input=vis_imgs, visualize_input_is_images=True)
+        trainer = make_mtg_trainer(train_epochs=500, resume_from_checkpoint=resume_path, visualize_input={'recons': vis_imgs})
         trainer.fit(system, datamodule)
 
     # ENTRYPOINT

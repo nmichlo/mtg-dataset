@@ -7,6 +7,7 @@ from typing import Any
 from typing import Dict
 from typing import Optional
 from typing import Sequence
+from typing import Union
 
 import numpy as np
 import pytorch_lightning as pl
@@ -40,6 +41,15 @@ class ToTensor(object):
         return img
 
 
+class BaseLightningModule(pl.LightningModule):
+
+    def get_progress_bar_dict(self):
+        # https://github.com/PyTorchLightning/pytorch-lightning/issues/1595
+        tqdm_dict = super().get_progress_bar_dict()
+        tqdm_dict.pop("v_num", None)
+        return tqdm_dict
+
+
 # ========================================================================= #
 # Visualise                                                                 #
 # ========================================================================= #
@@ -52,23 +62,28 @@ def _fn_has_param(fn, param: str):
 
 
 class VisualiseCallback(pl.Callback):
+    """
+    Takes in an input batch, if the ndim == 4, then it is assumed to be a batch of images (B, C, H, W).
+    Feeds the input batch through the model every `period` steps, and obtains the output which now must
+    be a batch of images (B, C, H, W).
+    """
 
-    def __init__(self, input_tensor: torch.Tensor, input_is_images=False, every_n_steps=1000, log_local=True, log_wandb=False, is_hsv=False, figwidth=15):
-        assert isinstance(input_tensor, torch.Tensor)
+    def __init__(self, name: str, input_batch: torch.Tensor, every_n_steps=1000, log_local=True, log_wandb=False, is_hsv=False, figwidth=15):
+        assert isinstance(input_batch, torch.Tensor)
         assert log_wandb or log_local
+        assert isinstance(name, str) and name.strip()
+        self._name = name
         self._count = 0
         self._every_n_steps = every_n_steps
         self._wandb = log_wandb
         self._local = log_local
         self._figwidth = figwidth
         self._is_hsv = is_hsv
-        self._input_tensor = input_tensor
-        self._input_is_images = input_is_images
+        self._input_batch = input_batch
+        self._input_batch_is_images = (input_batch.ndim == 4)
 
     def on_train_batch_end(self, trainer: 'pl.Trainer', pl_module: 'pl.LightningModule', outputs, batch: torch.Tensor, batch_idx: int, dataloader_idx: int) -> None:
-        # counter
         self._count += 1
-        # skip
         if self._count % self._every_n_steps != 0:
             return
         # import everything
@@ -76,16 +91,16 @@ class VisualiseCallback(pl.Callback):
         from disent.visualize.visualize_util import make_image_grid
         # feed forward
         with torch.no_grad(), evaluate_context(pl_module) as eval_module:
-            xs = self._input_tensor.to(eval_module.device)
+            xs = self._input_batch.to(eval_module.device)
             rs = eval_module.forward(xs)
             # convert to uint8
             xs = torch.moveaxis(torch.clip(xs * 255, 0, 255).to(torch.uint8), 1, -1).detach().cpu().numpy()
             rs = torch.moveaxis(torch.clip(rs * 255, 0, 255).to(torch.uint8), 1, -1).detach().cpu().numpy()
             # make grid
-            img = make_image_grid(np.concatenate([xs, rs]) if self._input_is_images else rs, num_cols=len(xs), pad=4)
+            img = make_image_grid(np.concatenate([xs, rs]) if self._input_batch_is_images else rs, num_cols=len(xs), pad=4)
         # plot
         if self._wandb:
-            wandb.log({'mtg-recons': wandb.Image(img)})
+            wandb.log({self._name: wandb.Image(img)})
             logger.info('logged wandb model visualisation')
 
         if self._local:
@@ -225,6 +240,7 @@ def make_mtg_datamodule(
         num_workers=num_workers,
     )
 
+
 def make_mtg_trainer(
     # training
     train_epochs: int = None,
@@ -232,8 +248,7 @@ def make_mtg_trainer(
     cuda: bool = torch.cuda.is_available(),
     # visualise
     visualize_period: int = 500,
-    visualize_input: torch.Tensor = None,
-    visualize_input_is_images: bool = False,
+    visualize_input: Dict[str, torch.Tensor] = None,
     # utils
     checkpoint_period: int = 2500,
     checkpoint_dir: str = 'checkpoints',
@@ -252,7 +267,9 @@ def make_mtg_trainer(
     if wandb:
         callbacks.append(WandbContextManagerCallback())
     if visualize_period and (visualize_input is not None):
-        callbacks.append(VisualiseCallback(input_tensor=visualize_input, input_is_images=visualize_input_is_images, every_n_steps=visualize_period, log_wandb=wandb, log_local=not wandb))
+        for k, v in visualize_input.items():
+            callbacks.append(VisualiseCallback(name=k, input_batch=v, every_n_steps=visualize_period, log_wandb=wandb, log_local=not wandb))
+
     if checkpoint_period:
         from pytorch_lightning.callbacks import ModelCheckpoint
         callbacks.append(ModelCheckpoint(
