@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from examples.simple_vae.nn.components import Swish
 from examples.simple_vae.nn.loss import LaplaceMseLoss
 from examples.simple_vae.nn.loss import MseLoss
 
@@ -25,8 +26,36 @@ logger = logging.getLogger(__name__)
 
 
 # ========================================================================= #
+# global layers                                                             #
+# ========================================================================= #
+
+
+def activation():
+    # return Swish()
+    return nn.LeakyReLU(1e-3, inplace=True)
+
+
+def norm(bn=True):
+    if bn:
+        return nn.Identity()  # nn.BatchNorm2d(out_feat)
+    else:
+        return nn.Identity()
+
+
+def dropout():
+    # return nn.Dropout(0.25)
+    return nn.Identity()
+
+
+def dropout2d():
+    # return nn.Dropout2d(0.25)
+    return nn.Identity()
+
+
+# ========================================================================= #
 # Generator                                                                 #
 # ========================================================================= #
+
 
 class Generator(nn.Module):
     def __init__(self, z_size: int, img_shape, in_features=(256, 256, 192, 128, 96), pix_in_features=64, final_activation='none'):
@@ -49,8 +78,8 @@ class Generator(nn.Module):
             return nn.Sequential(
                 nn.Upsample(scale_factor=2),
                 nn.Conv2d(in_feat, out_feat, kernel_size=3, stride=1, padding=1),
-                    *([nn.BatchNorm2d(out_feat)] if bn else []),
-                    nn.LeakyReLU(1e-3, inplace=True),
+                    norm(bn=bn),
+                    activation(),
             )
 
         # add pix_in_features to in_features list
@@ -61,7 +90,7 @@ class Generator(nn.Module):
             nn.Linear(in_features=z_size, out_features=in_features[0] * (H // scale) * (W // scale)),
             nn.Unflatten(dim=-1, unflattened_size=[in_features[0], H // scale, W // scale]),
             # CONV NET
-            nn.BatchNorm2d(in_features[0]),
+            # nn.BatchNorm2d(in_features[0]),
             *(upsample_block(inp, out, bn=i < len(in_features) - 1) for i, (inp, out) in enumerate(zip(in_features[:-1], in_features[1:]))),
             # PIXELS
             nn.Conv2d(pix_in_features, C, kernel_size=3, stride=1, padding=1),
@@ -85,9 +114,9 @@ class DiscriminatorBody(nn.Module):
         def discriminator_block(in_feat, out_feat, bn=True):
             return nn.Sequential(
                 nn.Conv2d(in_feat, out_feat, kernel_size=3, stride=2, padding=1),
-                nn.LeakyReLU(1e-3, inplace=True),
-                # nn.Dropout2d(0.25),
-                *([nn.BatchNorm2d(out_feat)] if bn else [])
+                    activation(),
+                    dropout2d(),
+                    norm(bn=bn),
             )
 
         # size of downscaled image
@@ -117,8 +146,8 @@ class DiscriminatorHead(nn.Module):
         super().__init__()
         self._discriminator_head = nn.Sequential(
             nn.Linear(in_size, hidden_size),
-                nn.LeakyReLU(1e-3, inplace=True),
-                nn.Dropout(0.25),
+                activation(),
+                dropout(),
             nn.Linear(hidden_size, out_size),
         )
 
