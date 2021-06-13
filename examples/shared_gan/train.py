@@ -7,6 +7,13 @@ EDIT:
 -- I just skimmed over the paper, but this seems similar to the
    ideas from "IntroVAE: Introspective Variational Autoencoders"
    https://arxiv.org/pdf/1807.06358.pdf
+
+TODO: look at these
+     - https://arxiv.org/pdf/2004.04467.pdf
+     - https://arxiv.org/pdf/1912.10321.pdf
+     - https://arxiv.org/pdf/2012.13736.pdf
+     - https://arxiv.org/abs/2012.13375
+     - https://arxiv.org/pdf/2012.11879.pdf
 """
 
 import logging
@@ -35,9 +42,9 @@ def activation():
     return nn.LeakyReLU(1e-3, inplace=True)
 
 
-def norm(bn=True):
+def norm(feat, bn=True):
     if bn:
-        return nn.Identity()  # nn.BatchNorm2d(out_feat)
+        return nn.BatchNorm2d(feat)
     else:
         return nn.Identity()
 
@@ -78,7 +85,7 @@ class Generator(nn.Module):
             return nn.Sequential(
                 nn.Upsample(scale_factor=2),
                 nn.Conv2d(in_feat, out_feat, kernel_size=3, stride=1, padding=1),
-                    norm(bn=bn),
+                    norm(out_feat, bn=bn),
                     activation(),
             )
 
@@ -114,9 +121,9 @@ class DiscriminatorBody(nn.Module):
         def discriminator_block(in_feat, out_feat, bn=True):
             return nn.Sequential(
                 nn.Conv2d(in_feat, out_feat, kernel_size=3, stride=2, padding=1),
+                    norm(out_feat, bn=bn),
                     activation(),
                     dropout2d(),
-                    norm(bn=bn),
             )
 
         # size of downscaled image
