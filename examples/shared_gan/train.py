@@ -19,7 +19,6 @@ import torch.nn.functional as F
 
 from examples.simple_vae.nn.loss import LaplaceMseLoss
 from examples.simple_vae.nn.loss import MseLoss
-from examples.simple_vae.nn.model import BaseAutoEncoder
 
 
 logger = logging.getLogger(__name__)
@@ -80,7 +79,7 @@ class Generator(nn.Module):
 
 
 class DiscriminatorBody(nn.Module):
-    def __init__(self, out_size, img_shape, out_features=(16, 32, 64, 128, 192)):
+    def __init__(self, img_shape, out_features=(16, 32, 64, 128, 192)):
         super().__init__()
 
         def discriminator_block(in_feat, out_feat, bn=True):
@@ -101,12 +100,11 @@ class DiscriminatorBody(nn.Module):
             # CONV LAYERS
             discriminator_block(C, out_features[0], bn=False),
             *(discriminator_block(inp, out) for inp, out in zip(out_features[:-1], out_features[1:])),
-            # LINEAR LAYERS
             nn.Flatten(),
-            nn.Linear(out_features[-1] * (H // scale) * (W // scale), out_size),
-            # nn.LeakyReLU(1e-3, inplace=True),
-            # nn.Dropout(0.25, inplace=True)
         )
+
+        self.out_orig_shape = (out_features[-1], (H // scale), (W // scale))
+        self.out_size = out_features[-1] * (H // scale) * (W // scale)
 
     def forward(self, x):
         assert x.ndim == 4, f'erroneous x.shape: {x.shape}'
@@ -115,46 +113,44 @@ class DiscriminatorBody(nn.Module):
 
 class DiscriminatorHead(nn.Module):
 
-    def __init__(self, in_size: int, out_size: int):
+    def __init__(self, in_size: int, hidden_size: int, out_size: int):
         super().__init__()
         self._discriminator_head = nn.Sequential(
-            nn.Linear(in_size, in_size),
+            nn.Linear(in_size, hidden_size),
                 nn.LeakyReLU(1e-3, inplace=True),
-                # nn.Dropout(0.25),
-            nn.Linear(in_size, out_size),
+                nn.Dropout(0.25),
+            nn.Linear(hidden_size, out_size),
         )
 
     def forward(self, z):
         assert z.ndim == 2, f'erroneous z.shape: {z.shape}'
-        # this should be used with F.binary_cross_entropy_with_logits(y_logits, y_targ)
-        logit = self._discriminator_head(z)
-        return logit
+        return self._discriminator_head(z)
 
 
-class SharedGanAutoEncoder(BaseAutoEncoder):
+class SharedGanAutoEncoder(nn.Module):
 
-    def _enc(self, x):
-        assert x.ndim == 4, f'erroneous x.shape: {x.shape}'
-        return self._discriminator_head_vae(self._discriminator_body(x))
+    # AE: BaseAutoEncoder
 
-    def _dec(self, z):
-        assert z.ndim == 2, f'erroneous z.shape: {z.shape}'
+    def encode(self, x):
+        return self._discriminator_head_ae(self._discriminator_body(x))
+
+    def decode(self, z):
         return self._generator(z)
 
-    @property
-    def params_gen(self):
-        return nn.ModuleList([self._discriminator_body, self._discriminator_head_vae, self._generator]).parameters()
+    def forward(self, x):
+        return self.decode(self.encode(x))
 
-    @property
-    def params_dsc(self):
-        return nn.ModuleList([self._discriminator_body, self._discriminator_head_dsc]).parameters()
+    # INIT:
 
-    def __init__(self, z_size: int, hidden_units: int, obs_shape: Tuple[int, int, int] = (1, 32, 32)):
+    def __init__(self, z_size: int, hidden_size: int, obs_shape: Tuple[int, int, int] = (1, 32, 32)):
         super().__init__()
+        assert len(obs_shape) == 3
         self._generator              = Generator(z_size=z_size, img_shape=obs_shape, final_activation='none')
-        self._discriminator_body     = DiscriminatorBody(img_shape=obs_shape, out_size=hidden_units)
-        self._discriminator_head_vae = DiscriminatorHead(in_size=hidden_units, out_size=z_size*2)
-        self._discriminator_head_dsc = DiscriminatorHead(in_size=hidden_units, out_size=1)
+        self._discriminator_body     = DiscriminatorBody(img_shape=obs_shape)
+        self._discriminator_head_ae  = DiscriminatorHead(in_size=self._discriminator_body.out_size, hidden_size=hidden_size, out_size=z_size)
+        self._discriminator_head_dsc = DiscriminatorHead(in_size=self._discriminator_body.out_size, hidden_size=hidden_size, out_size=1)
+
+    # GAN:
 
     def discriminate(self, x):
         return self._discriminator_head_dsc(self._discriminator_body(x))
@@ -176,12 +172,12 @@ class SharedGAN(pl.LightningModule):
     def __init__(
         self,
         z_size: int = 256,
-        hidden_units: int = 512,
+        hidden_size: int = 512,
         obs_shape: Tuple[int, int, int] = (3, 224, 160),
         lr: float = 0.0002,
         adam_betas: float = (0.5, 0.999),
-        vae_alpha=25.0,
-        vae_beta=0.003,
+        ae_alpha=25.0,
+        ae_beta=0.003,
         recon_loss='mse_laplace',
     ):
         super().__init__()
@@ -189,7 +185,7 @@ class SharedGAN(pl.LightningModule):
         # checks
         assert len(self.hparams.obs_shape) == 3
         # combined network
-        self.sgan = SharedGanAutoEncoder(z_size=self.hparams.z_size, obs_shape=self.hparams.obs_shape, hidden_units=self.hparams.hidden_units)
+        self.sgan = SharedGanAutoEncoder(z_size=self.hparams.z_size, hidden_size=self.hparams.hidden_size, obs_shape=self.hparams.obs_shape)
         # checks
         assert self.dtype in (torch.float32, torch.float16)
         # loss function
@@ -217,27 +213,32 @@ class SharedGAN(pl.LightningModule):
         # sample noise
         z = self.sample_z(batch_size=batch.shape[0])
 
-        # improve the generator to fool the discriminator
+        # improve the AE
         if optimizer_idx == 0:
-            # compute vae loss
-            recon, vae_loss, vae_loss_recon, vae_loss_kl = self._train_vae_forward(batch)
-            self.log('vae_loss_recon', vae_loss_recon, prog_bar=False)
-            self.log('vae_loss_kl',    vae_loss_kl,    prog_bar=False)
-            self.log('vae_loss',       vae_loss,       prog_bar=True)
+            # compute ae loss
+            recon, ae_loss, ae_loss_rec, ae_loss_reg = self._train_stochastic_ae_forward(batch)
+            self.log('ae_loss_rec', ae_loss_rec, prog_bar=False)
+            self.log('ae_loss_reg', ae_loss_reg, prog_bar=False)
+            self.log('ae_loss',     ae_loss,     prog_bar=True)
+            return ae_loss
+
+        # improve the generator to fool the discriminator
+        elif optimizer_idx == 1:
             # compute gan loss
             loss_gen_sample = self.adversarial_loss(self.sgan.generate_discriminate(z), is_real=True)
-            loss_gen_recons = self.adversarial_loss(self.sgan.discriminate(recon),      is_real=True)  # self.sgan.encode_generate_discriminate_train(batch)
-            loss_gen = 0.5 * (loss_gen_sample + loss_gen_recons)
+            # loss_gen_recons = self.adversarial_loss(self.sgan.discriminate(recon),      is_real=True)  # self.sgan.encode_generate_discriminate_train(batch)
+            # loss_gen = 0.5 * (loss_gen_sample + loss_gen_recons)
+            # self.log('loss_gen_recons', loss_gen_recons, prog_bar=False)
+            loss_gen = loss_gen_sample
             self.log('loss_gen_sample', loss_gen_sample, prog_bar=False)
-            self.log('loss_gen_recons', loss_gen_recons, prog_bar=False)
             self.log('loss_gen',        loss_gen,        prog_bar=True)
-            return loss_gen + vae_loss
+            return loss_gen
 
         # improve the discriminator to correctly identify the generator
-        elif optimizer_idx == 1:
-            # compute vae forward
+        elif optimizer_idx == 2:
+            # compute ae forward
             with torch.no_grad():
-                recon, _, _ = self.sgan.forward_train(batch)
+                recon = self.sgan.forward(batch)
             # discriminate random samples
             loss_fake_sample = self.adversarial_loss(self.sgan.generate_discriminate(z), is_real=False)
             loss_fake_recons = self.adversarial_loss(self.sgan.discriminate(recon),      is_real=False)  # self.sgan.encode_generate_discriminate_train(batch)
@@ -249,16 +250,17 @@ class SharedGAN(pl.LightningModule):
             self.log('loss_dsc',             loss_dsc,         prog_bar=True)
             return loss_dsc
 
-    def _train_vae_forward(self, batch):
-        recon, posterior, prior = self.sgan.forward_train(batch)
-        # compute recon loss
-        loss_recon = self.hparams.vae_alpha * self._loss(recon, batch, reduction='mean')
-        # compute kl divergence
-        loss_kl = self.hparams.vae_beta * torch.distributions.kl_divergence(posterior, prior).mean()
-        # combined loss
-        loss = loss_recon + loss_kl
-        # return losses
-        return recon, loss, loss_recon, loss_kl
+    def _train_stochastic_ae_forward(self, batch):
+        # feed forward with noise
+        z = self.sgan.encode(batch)
+        z + torch.randn_like(z)
+        recon = self.sgan.decode(z)
+        # compute recon loss & regularizer -- like KL for sigma = 1, MSE from zero
+        loss_rec = self.hparams.ae_alpha * self._loss(recon, batch, reduction='mean')
+        loss_reg = self.hparams.ae_beta * (z ** 2).mean()
+        loss = loss_rec + loss_reg
+        # return all values...
+        return recon, loss, loss_rec, loss_reg
 
     def adversarial_loss(self, y_logits, is_real: bool):
         # get targets
@@ -268,10 +270,14 @@ class SharedGAN(pl.LightningModule):
         return F.binary_cross_entropy_with_logits(y_logits, y_targ, reduction='mean')
 
     def configure_optimizers(self):
+        params_ae  = nn.ModuleList([self.sgan._discriminator_body, self.sgan._discriminator_head_ae, self.sgan._generator]).parameters()
+        params_gen = nn.ModuleList([self.sgan._generator]).parameters()
+        params_dsc = nn.ModuleList([self.sgan._discriminator_body, self.sgan._discriminator_head_dsc]).parameters()
         # make optimizers
-        opt_g = torch.optim.Adam(self.sgan.params_gen, lr=self.hparams.lr, betas=self.hparams.adam_betas)
-        opt_d = torch.optim.Adam(self.sgan.params_dsc, lr=self.hparams.lr, betas=self.hparams.adam_betas)
-        return [opt_g, opt_d], []
+        opt_ae  = torch.optim.Adam(params_ae,  lr=self.hparams.lr, betas=self.hparams.adam_betas)
+        opt_gen = torch.optim.Adam(params_gen, lr=self.hparams.lr, betas=self.hparams.adam_betas)
+        opt_dsc = torch.optim.Adam(params_dsc, lr=self.hparams.lr, betas=self.hparams.adam_betas)
+        return [opt_ae, opt_gen, opt_dsc], []
 
 
 # ========================================================================= #
@@ -296,7 +302,7 @@ if __name__ == '__main__':
             train_epochs=500, visualize_period=500, resume_from_checkpoint=resume_path,
             visualize_input=vis_input, visualize_input_is_images=False,
             wandb=wandb, wandb_project='MTG-GAN', wandb_name='MTG-GAN',
-            checkpoint_monitor='vae_loss_recon',
+            checkpoint_monitor='ae_loss_rec',
         )
         trainer.fit(system, datamodule)
 
