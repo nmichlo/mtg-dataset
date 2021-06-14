@@ -17,6 +17,7 @@ TODO: look at these
 """
 
 import logging
+from typing import Optional
 from typing import Tuple
 
 import numpy as np
@@ -44,11 +45,7 @@ def activation():
 
 def norm(feat, bn=True):
     if bn:
-        # (1-momentum) ** steps = remaining_ratio
-        # 1 - remaining_ratio ** (1/steps)
-        # 1 - 0.01 ** (1/100) ~= 0.045
-        # 1 - 0.01 ** (1/250) ~= 0,01825
-        return nn.BatchNorm2d(feat, momentum=0.045)
+        return nn.BatchNorm2d(feat)
     else:
         return nn.Identity()
 
@@ -89,7 +86,7 @@ class GeneratorBody(nn.Module):
             return nn.Sequential(
                 nn.Upsample(scale_factor=2),
                 nn.Conv2d(in_feat, out_feat, kernel_size=3, stride=1, padding=1),
-                    # norm(out_feat, bn=bn),
+                    norm(out_feat, bn=bn),
                     activation(),
             )
 
@@ -100,7 +97,7 @@ class GeneratorBody(nn.Module):
         self._generator = nn.Sequential(
             nn.Unflatten(dim=-1, unflattened_size=[in_features[0], H // scale, W // scale]),
             # CONV NET
-            norm(in_features[0]),
+            # norm(in_features[0]),
             *(upsample_block(inp, out, bn=i < len(in_features) - 2) for i, (inp, out) in enumerate(zip(in_features[:-1], in_features[1:]))),
             # PIXELS
             nn.Conv2d(pix_in_features, C, kernel_size=3, stride=1, padding=1),
@@ -152,18 +149,26 @@ class DiscriminatorBody(nn.Module):
 
 class DiscriminatorHead(nn.Module):
 
-    def __init__(self, in_size: int, hidden_size: int, out_size: int):
+    def __init__(self, in_size: int, hidden_size: Optional[int], out_size: int):
         super().__init__()
-        self._discriminator_head = nn.Sequential(
-            nn.Linear(in_size, hidden_size),
-                activation(),
-                dropout(),
-            nn.Linear(hidden_size, out_size),
-        )
+        if hidden_size is None:
+            self._discriminator_head = nn.Linear(in_size, out_size)
+        else:
+            self._discriminator_head = nn.Sequential(
+                nn.Linear(in_size, hidden_size),
+                    activation(),
+                    dropout(),
+                nn.Linear(hidden_size, out_size),
+            )
 
     def forward(self, z):
         assert z.ndim == 2, f'erroneous z.shape: {z.shape}'
         return self._discriminator_head(z)
+
+
+# ========================================================================= #
+# Discriminator                                                             #
+# ========================================================================= #
 
 
 class SharedGanAutoEncoder(nn.Module):
@@ -209,7 +214,7 @@ class SharedGanAutoEncoder(nn.Module):
         gen_features: Tuple[int, ...] = (256, 256, 192, 128, 96),
         gen_features_pix: int = 64,
         params_enc_in_gen_step: bool = False,
-
+        share_enc: bool = False,
     ):
         super().__init__()
         assert params_enc_in_gen_step is False
@@ -217,9 +222,9 @@ class SharedGanAutoEncoder(nn.Module):
         self._params_enc_in_gen_step = params_enc_in_gen_step
         # models
         self._generator_body     = GeneratorBody(img_shape=obs_shape, final_activation='none', in_features=gen_features, pix_in_features=gen_features_pix)
-        self._generator_head     = DiscriminatorHead(in_size=z_size, hidden_size=hidden_size, out_size=self._generator_body.in_size)
+        self._generator_head     = DiscriminatorHead(in_size=z_size, hidden_size=None, out_size=self._generator_body.in_size)
         self._discriminator_body = DiscriminatorBody(img_shape=obs_shape, out_features=dsc_features)
-        self._encoder_body       = DiscriminatorBody(img_shape=obs_shape, out_features=dsc_features)  # TODO: shared, if this is replaced with the discriminator_body
+        self._encoder_body       = DiscriminatorBody(img_shape=obs_shape, out_features=dsc_features) if not share_enc else self._discriminator_body
         self._encoder_head       = DiscriminatorHead(in_size=self._discriminator_body.out_size, hidden_size=hidden_size, out_size=z_size)
         self._discriminator_head = DiscriminatorHead(in_size=self._discriminator_body.out_size, hidden_size=hidden_size, out_size=1)
         # count params
@@ -277,11 +282,12 @@ class SimpleVaeGan(BaseLightningModule):
         lr: float = 0.0005,
         adam_betas: float = (0.5, 0.999),
         # features
-        z_size: int = 256,
-        hidden_size: int = 384,
-        dsc_features: Tuple[int, ...] = features(16, 128, num=5),
-        gen_features: Tuple[int, ...] = features(128, 48, num=5),
-        gen_features_pix: int = 32,
+        z_size: int = 256,                                            # 256,                      # 256,
+        hidden_size: int = 384,                                       # 512,                      # 384,
+        dsc_features: Tuple[int, ...] = features(16, 128, num=5),     # (16, 32, 64, 128, 192),   # features(16, 128, num=5),
+        gen_features: Tuple[int, ...] = features(128, 48, num=5),     # (256, 256, 192, 128, 96), # features(128, 48, num=5),
+        gen_features_pix: int = 32,                                   # 64,                       # 32,
+        share_enc: bool = True,
         # auto-encoder loss
         train_ae: bool = True,
         ae_recon_loss='mse',
@@ -305,6 +311,7 @@ class SimpleVaeGan(BaseLightningModule):
             gen_features=self.hparams.gen_features,
             gen_features_pix=self.hparams.gen_features_pix,
             params_enc_in_gen_step=self.hparams.adversarial_recons_train_enc and self.hparams.adversarial_recons,
+            share_enc=self.hparams.share_enc,
         )
         # checks
         assert self.dtype in (torch.float32, torch.float16)
@@ -416,36 +423,46 @@ if __name__ == '__main__':
         from examples.common import make_mtg_datamodule
         from examples.common import make_mtg_trainer
 
-        # settings:
-        # 5878MiB / 5932MiB (RTX2060)
-        system = SimpleVaeGan(
-            # z_size=384,
-            # hidden_size=768,
-            # dsc_features = features(32, 256, num=5),
-            # gen_features = features(256, 128, num=5),
-            # gen_features_pix = 96,
-
-            z_size=256,
-            hidden_size=384,
-            dsc_features=features(32, 160, num=5),
-            gen_features=features(160, 48, num=5),
-            gen_features_pix=32,
-        )
-
         # get dataset & visualise images
         datamodule = make_mtg_datamodule(
-            batch_size=96+16+4,
+            batch_size=64,
             load_path=data_path,
         )
-        vis_input = system.sample_z(8)
-        vis_imgs = torch.stack([datamodule.data[i] for i in [3466, 18757, 20000, 40000, 21586, 20541, 1100]])
+
+        system = SimpleVaeGan(
+            # MEDIUM | batch_size=64 == 4070MiB & 2.47it/s
+            z_size=256,
+            hidden_size=384,
+            dsc_features=features(16, 128, num=5),
+            gen_features=features(128, 48, num=5),
+            gen_features_pix=32,
+
+            # LARGE
+            # z_size=256,
+            # hidden_size=512,
+            # dsc_features=(16, 32, 64, 128, 192),
+            # gen_features=(256, 256, 192, 128, 96),
+            # gen_features_pix=64,
+
+            # GENERAL
+            share_enc=True,
+            ae_recon_loss='mse',
+        )
 
         # start training model
         trainer = make_mtg_trainer(
             train_epochs=500,
-            visualize_period=500, visualize_input={'samples': vis_input, 'recons': vis_imgs},
-            wandb=wandb, wandb_project='MTG-GAN', wandb_name='MTG-GAN', wandb_kwargs=dict(tags=['medium']),
-            checkpoint_monitor=None, resume_from_checkpoint=resume_path,
+            visualize_period=500,
+            visualize_input={
+                'samples': system.sample_z(8),
+                'recons': torch.stack([datamodule.data[i] for i in [3466, 18757, 20000, 40000, 21586, 20541, 1100]]),
+            },
+            wandb=wandb,
+            wandb_project='MTG-GAN',
+            wandb_name='MTG-GAN',
+            wandb_kwargs=dict(tags=['medium']),
+            checkpoint_monitor=None,
+            resume_from_checkpoint=resume_path,
         )
         trainer.fit(system, datamodule)
 
