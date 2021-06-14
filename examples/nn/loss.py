@@ -94,51 +94,5 @@ class LaplaceMseLoss(nn.Module):
 
 
 # ========================================================================= #
-# Loss Reduction                                                            #
-# ========================================================================= #
-
-
-_REDUCE_DIMS = {
-    'none': None,
-    'chn': (   -3,       ),
-    'pix': (       -2, -1),
-    'obs': (   -3, -2, -1),
-    'bch': (0,           ),
-}
-
-_REDUCE_FNS = {
-    'mean': torch.mean,
-    'var': torch.var,
-    'std': torch.std,
-}
-
-
-def mean_weighted_loss(unreduced_loss, weight_mode: str = 'none', weight_reduce='obs', weight_shift=True, weight_power=1):
-    # exit early
-    if weight_mode == 'none':
-        if weight_reduce != 'none':
-            warnings.warn('`weight_reduce` has no effect when `weight_mode` == "none"')
-        return unreduced_loss.mean()
-    # generate weights
-    with torch.no_grad():
-        reduce_dims = _REDUCE_DIMS[weight_reduce]
-        reduce_fn = _REDUCE_FNS[weight_mode]
-        # get weights
-        if reduce_dims is None:
-            weights = unreduced_loss
-        else:
-            weights = reduce_fn(unreduced_loss, keepdim=True, dim=reduce_dims)
-        # shift
-        if weight_shift:
-            weights = weights - torch.min(weights)
-        if weight_power != 1:
-            weights = weights ** weight_power
-        # normalise weights
-        weights = (weights / weights.mean()).detach()
-    # compute version
-    return (unreduced_loss * weights).mean()
-
-
-# ========================================================================= #
 # END                                                                       #
 # ========================================================================= #

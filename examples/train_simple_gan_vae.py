@@ -20,20 +20,21 @@ import logging
 from typing import Optional
 from typing import Tuple
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 
 from examples.common import BaseLightningModule
-from examples.simple_vae.nn.components import NormalDist
-from examples.simple_vae.nn.loss import LaplaceMseLoss
-from examples.simple_vae.nn.loss import MseLoss
+from examples.common import count_params
+from examples.common import make_features
+from examples.nn.loss import LaplaceMseLoss
+from examples.nn.loss import MseLoss
+from examples.util.iter import is_last_iter
+from examples.util.iter import iter_pairs
 
 
 logger = logging.getLogger(__name__)
-
 
 # ========================================================================= #
 # global layers                                                             #
@@ -59,6 +60,16 @@ def norm_gen(feat, bn=True):
         return nn.Identity()
 
 
+def weight_norm_dsc(module):
+    return module
+    # return torch.nn.utils.weight_norm(module)
+
+
+def weight_norm_gen(module):
+    return module
+    # return torch.nn.utils.weight_norm(module)
+
+
 def dropout():
     return nn.Dropout(0.25)
 
@@ -74,42 +85,35 @@ def dropout2d():
 
 
 class GeneratorBody(nn.Module):
-    def __init__(self, img_shape, in_features=(256, 256, 192, 128, 96), pix_in_features=64, final_activation='none'):
+    def __init__(self, img_shape, features=(256, 256, 192, 128, 96), pix_in_features=64):
         super().__init__()
         self.img_shape = img_shape
-
-        # size of downscaled image
-        C, H, W = img_shape
-        scale = 2 ** len(in_features)
-        assert H % scale == 0
-        assert W % scale == 0
-
-        final_act = {
-            'tanh': nn.Tanh(),
-            'sigmoid': nn.Sigmoid(),
-            'none': nn.Identity(),
-        }[final_activation]
 
         def upsample_block(in_feat, out_feat, bn=True):
             return nn.Sequential(
                 nn.Upsample(scale_factor=2),
-                nn.Conv2d(in_feat, out_feat, kernel_size=3, stride=1, padding=1),
+                weight_norm_gen(nn.Conv2d(in_feat, out_feat, kernel_size=3, stride=1, padding=1)),
                     norm_gen(out_feat, bn=bn),
                     activation(),
             )
 
-        # add pix_in_features to in_features list
-        in_features = [*in_features, pix_in_features]
-        self.in_size = in_features[0] * (H // scale) * (W // scale)
+        # size of downscaled image
+        C, H, W = img_shape
+        scale = 2 ** len(features)
+        assert H % scale == 0
+        assert W % scale == 0
+
+        # add pix_in_features to features list
+        features = [*features, pix_in_features]
+        self.in_size = features[0] * (H // scale) * (W // scale)
 
         self._generator = nn.Sequential(
-            nn.Unflatten(dim=-1, unflattened_size=[in_features[0], H // scale, W // scale]),
+            nn.Unflatten(dim=-1, unflattened_size=[features[0], H // scale, W // scale]),
+            norm_gen(features[0]),
             # CONV NET
-            # norm_gen(in_features[0]),
-            *(upsample_block(inp, out, bn=i < len(in_features) - 2) for i, (inp, out) in enumerate(zip(in_features[:-1], in_features[1:]))),
+            *(upsample_block(inp, out, bn=not is_last) for is_last, (inp, out) in is_last_iter(iter_pairs(features))),
             # PIXELS
             nn.Conv2d(pix_in_features, C, kernel_size=3, stride=1, padding=1),
-            final_act,
         )
 
     def forward(self, z):
@@ -123,12 +127,12 @@ class GeneratorBody(nn.Module):
 
 
 class DiscriminatorBody(nn.Module):
-    def __init__(self, img_shape, out_features=(16, 32, 64, 128, 192)):
+    def __init__(self, img_shape, features=(16, 32, 64, 128, 192)):
         super().__init__()
 
         def discriminator_block(in_feat, out_feat, bn=True):
             return nn.Sequential(
-                nn.Conv2d(in_feat, out_feat, kernel_size=3, stride=2, padding=1),
+                weight_norm_dsc(nn.Conv2d(in_feat, out_feat, kernel_size=3, stride=2, padding=1)),
                     norm_dsc(out_feat, bn=bn),
                     activation(),
                     dropout2d(),
@@ -136,19 +140,19 @@ class DiscriminatorBody(nn.Module):
 
         # size of downscaled image
         C, H, W = img_shape
-        scale = 2 ** len(out_features)
+        scale = 2 ** len(features)
         assert H % scale == 0
         assert W % scale == 0
 
+        self.out_orig_shape = (features[-1], (H // scale), (W // scale))
+        self.out_size = features[-1] * (H // scale) * (W // scale)
+
         self._discriminator_body = nn.Sequential(
             # CONV LAYERS
-            discriminator_block(C, out_features[0], bn=False),
-            *(discriminator_block(inp, out) for inp, out in zip(out_features[:-1], out_features[1:])),
+            discriminator_block(C, features[0], bn=False),
+            *(discriminator_block(inp, out) for inp, out in iter_pairs(features)),
             nn.Flatten(),
         )
-
-        self.out_orig_shape = (out_features[-1], (H // scale), (W // scale))
-        self.out_size = out_features[-1] * (H // scale) * (W // scale)
 
     def forward(self, x):
         assert x.ndim == 4, f'erroneous x.shape: {x.shape}'
@@ -235,10 +239,10 @@ class SharedGanAutoEncoder(nn.Module):
         self.is_vae = is_vae
         self._params_enc_in_gen_step = params_enc_in_gen_step
         # models
-        self._generator_body     = GeneratorBody(img_shape=obs_shape, final_activation='none', in_features=gen_features, pix_in_features=gen_features_pix)
+        self._generator_body     = GeneratorBody(img_shape=obs_shape, features=gen_features, pix_in_features=gen_features_pix)
         self._generator_head     = DiscriminatorHead(in_size=z_size, hidden_size=None, out_size=self._generator_body.in_size)
-        self._discriminator_body = DiscriminatorBody(img_shape=obs_shape, out_features=dsc_features)
-        self._encoder_body       = DiscriminatorBody(img_shape=obs_shape, out_features=dsc_features) if not share_enc else self._discriminator_body
+        self._discriminator_body = DiscriminatorBody(img_shape=obs_shape, features=dsc_features)
+        self._encoder_body       = DiscriminatorBody(img_shape=obs_shape, features=dsc_features) if not share_enc else self._discriminator_body
         self._encoder_head       = DiscriminatorHead(in_size=self._discriminator_body.out_size, hidden_size=hidden_size, out_size=(z_size*2) if self.is_vae else z_size)
         self._discriminator_head = DiscriminatorHead(in_size=self._discriminator_body.out_size, hidden_size=hidden_size, out_size=1)
         # count params
@@ -263,47 +267,20 @@ class SharedGanAutoEncoder(nn.Module):
 # ========================================================================= #
 
 
-def features(start, end, num):
-    import numpy as np
-    mul = (end / start) ** (1 / (num-1))
-    sequence = start * mul ** np.arange(num)
-    return tuple(int(v) for v in np.round(sequence))
-
-
-def _count_params(model, trainable=None):
-    if model is None:
-        return 0
-    if trainable is None:
-        return sum(p.numel() for p in model.parameters())
-    elif trainable:
-        return sum(p.numel() for p in model.parameters() if p.requires_grad)
-    else:
-        return sum(p.numel() for p in model.parameters() if not p.requires_grad)
-
-
-def count_params(model, trainable=None):
-    p = _count_params(model, trainable)
-    pow = 0 if (p == 0) else int(np.log(p) / np.log(1000))
-    mul = 1000 ** pow
-    symbol = {0: '', 1: 'K', 2: 'M', 3: 'B', 4: 'T', 5: 'P', 6: 'E'}[pow]
-    return f'{p/mul:5.1f}{symbol}'
-
-
 class SimpleVaeGan(BaseLightningModule):
 
     def __init__(
         self,
         obs_shape: Tuple[int, int, int] = (3, 224, 160),
         # optimizer
-        ae_lr: float = 0.0003,
-        lr: float = 0.0001,
+        lr: float = 0.00025,
         adam_betas: float = (0.5, 0.999),
         # features
-        z_size: int = 256,                                            # 256,                      # 256,
-        hidden_size: int = 384,                                       # 512,                      # 384,
-        dsc_features: Tuple[int, ...] = features(16, 128, num=5),     # (16, 32, 64, 128, 192),   # features(16, 128, num=5),
-        gen_features: Tuple[int, ...] = features(128, 48, num=5),     # (256, 256, 192, 128, 96), # features(128, 48, num=5),
-        gen_features_pix: int = 32,                                   # 64,                       # 32,
+        z_size: int = 256,                                                 # 256,                      # 256,
+        hidden_size: int = 384,                                            # 512,                      # 384,
+        dsc_features: Tuple[int, ...] = make_features(16, 128, num=5),     # (16, 32, 64, 128, 192),   # features(16, 128, num=5),
+        gen_features: Tuple[int, ...] = make_features(128, 48, num=5),     # (256, 256, 192, 128, 96), # features(128, 48, num=5),
+        gen_features_pix: int = 32,                                        # 64,                       # 32,
         # auto-encoder loss
         share_enc: bool = False,
         train_ae: bool = True,
@@ -435,14 +412,10 @@ class SimpleVaeGan(BaseLightningModule):
     # OPTIM
 
     def configure_optimizers(self):
-        opt_ae = torch.optim.Adam(self.sgan.params_ae, lr=self.hparams.ae_lr, betas=self.hparams.adam_betas)
+        opt_ae = torch.optim.Adam(self.sgan.params_ae, lr=self.hparams.lr * 2, betas=self.hparams.adam_betas)
         opt_dsc = torch.optim.Adam(self.sgan.params_dsc, lr=self.hparams.lr, betas=self.hparams.adam_betas)
-        opt_gen = torch.optim.Adam(self.sgan.params_gen, lr=self.hparams.lr, betas=self.hparams.adam_betas)
-        return [
-                   opt_ae,
-                   opt_dsc,
-                   opt_gen, opt_gen, opt_gen,  # repeat gen optimization
-               ], []
+        opt_gen = torch.optim.Adam(self.sgan.params_gen, lr=self.hparams.lr / 2, betas=self.hparams.adam_betas)
+        return [opt_ae, opt_dsc, opt_gen], []
 
 
 # ========================================================================= #
@@ -463,20 +436,14 @@ if __name__ == '__main__':
         )
 
         system = SimpleVaeGan(
-            # MEDIUM | batch_size=64 gives 4070MiB at 2.47it/s
+            # MEDIUM | batch_size=64 gives ~4070MiB at ~2.47it/s
             # z_size=256,
             # hidden_size=384,
-            # dsc_features=features(16, 128, num=5),
-            # gen_features=features(128, 48, num=5),
+            # dsc_features=make_features(16, 128, num=5),
+            # gen_features=make_features(128, 48, num=5),
             # gen_features_pix=32,
 
-            # LARGE | batch_size=32 gives 5530MiB at 2.08it/s
-            # - params: generator_body     | trainable =   1.3M | non-trainable =   0.0
-            # - params: generator_head     | trainable =   3.4M | non-trainable =   0.0
-            # - params: encoder_body       | trainable = 722.5K | non-trainable =   0.0
-            # - params: encoder_head       | trainable =   3.6M | non-trainable =   0.0
-            # - params: discriminator_body | trainable = 722.5K | non-trainable =   0.0
-            # - params: discriminator_head | trainable =   3.4M | non-trainable =   0.0
+            # LARGE | batch_size=32 gives ~5530MiB at ~2.08it/s
             z_size=384,                              # 256
             hidden_size=512,                         # 512
             dsc_features=(64, 96, 128, 192, 224),    # (16, 32, 64, 128, 192)

@@ -24,7 +24,6 @@
 
 import logging
 
-import pytorch_lightning as pl
 import torch
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -32,11 +31,10 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from examples.common import BaseLightningModule
 from examples.common import make_mtg_datamodule
 from examples.common import make_mtg_trainer
-from examples.simple_vae.nn.loss import LaplaceMseLoss
-from examples.simple_vae.nn.loss import mean_weighted_loss
-from examples.simple_vae.nn.loss import MseLoss
-from examples.simple_vae.nn.loss import SpatialFreqLoss
-from examples.simple_vae.nn.model_alt import AutoEncoderSkips
+from examples.nn.loss import LaplaceMseLoss
+from examples.nn.loss import MseLoss
+from examples.nn.loss import SpatialFreqLoss
+from examples.nn.model_alt import AutoEncoderSkips
 
 
 # ========================================================================= #
@@ -62,10 +60,6 @@ class MtgVaeSystem(BaseLightningModule):
         model_smooth_downsample=False,
         # loss options
         recon_loss='mse',
-        recon_weight_reduce='none',
-        recon_weight_mode='none',
-        recon_weight_shift=True,
-        recon_weight_power=1,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -113,13 +107,7 @@ class MtgVaeSystem(BaseLightningModule):
     def training_step(self, batch, batch_idx):
         recon, posterior, prior = self.model.forward_train(batch)
         # compute recon loss
-        loss_recon = self.hparams.alpha * mean_weighted_loss(
-            unreduced_loss=self._loss(recon, batch, reduction='none'),
-            weight_reduce=self.hparams.recon_weight_reduce,
-            weight_mode=self.hparams.recon_weight_mode,
-            weight_shift=self.hparams.recon_weight_shift,
-            weight_power=self.hparams.recon_weight_power,
-        )
+        loss_recon = self.hparams.alpha * self._loss(recon, batch, reduction='mean')
         # compute kl divergence
         loss_kl = self.hparams.beta * torch.distributions.kl_divergence(posterior, prior).mean()
         # combined loss
@@ -158,10 +146,6 @@ if __name__ == '__main__':
             model_smooth_upsample=True,
             # training options
             recon_loss='mse_laplace',
-            recon_weight_mode='none',
-            recon_weight_reduce='none',
-            recon_weight_power=1,
-            recon_weight_shift=False,
         )
 
         # get dataset & visualise images

@@ -2,6 +2,7 @@ matplotlib
 torch
 torchvision
 pytorch-lightning
+git+https://github.com/jonbarron/robust_loss_pytorch
 
 # run
 wandb

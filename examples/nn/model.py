@@ -30,8 +30,8 @@ import torch
 import torch.nn as nn
 from torch.distributions import Normal
 
-from examples.simple_vae.nn.components import Activation
-from examples.simple_vae.nn.components import NormalDist
+from examples.nn.components import Activation
+from examples.nn.components import NormalDist
 
 
 # ========================================================================= #

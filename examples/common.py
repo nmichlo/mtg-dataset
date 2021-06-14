@@ -6,13 +6,10 @@ from functools import lru_cache
 from typing import Any
 from typing import Dict
 from typing import Optional
-from typing import Sequence
-from typing import Union
 
 import numpy as np
 import pytorch_lightning as pl
 import torch
-import wandb
 from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
 from torch.utils.data import random_split
@@ -21,6 +18,37 @@ from mtgdata.util import Hdf5Dataset
 
 
 logger = logging.getLogger(__name__)
+
+
+# ========================================================================= #
+# Transform                                                                 #
+# ========================================================================= #
+
+
+def make_features(start, end, num):
+    import numpy as np
+    mul = (end / start) ** (1 / (num-1))
+    sequence = start * mul ** np.arange(num)
+    return tuple(int(v) for v in np.round(sequence))
+
+
+def _count_params(model, trainable=None):
+    if model is None:
+        return 0
+    if trainable is None:
+        return sum(p.numel() for p in model.parameters())
+    elif trainable:
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    else:
+        return sum(p.numel() for p in model.parameters() if not p.requires_grad)
+
+
+def count_params(model, trainable=None):
+    p = _count_params(model, trainable)
+    pow = 0 if (p == 0) else int(np.log(p) / np.log(1000))
+    mul = 1000 ** pow
+    symbol = {0: '', 1: 'K', 2: 'M', 3: 'B', 4: 'T', 5: 'P', 6: 'E'}[pow]
+    return f'{p/mul:5.1f}{symbol}'
 
 
 # ========================================================================= #
