@@ -40,19 +40,19 @@ logger = logging.getLogger(__name__)
 
 def activation():
     # return Swish()
-    return nn.LeakyReLU(1e-3, inplace=True)
+    return nn.LeakyReLU(inplace=True)
 
 
 def norm_dsc(feat, bn=True):
     if bn:
-        return nn.BatchNorm2d(feat)
+        return nn.BatchNorm2d(feat, momentum=0.05)
     else:
         return nn.Identity()
 
 
 def norm_gen(feat, bn=True):
     if bn:
-        return nn.Identity()  # nn.BatchNorm2d(feat)
+        return nn.BatchNorm2d(feat, momentum=0.05)
     else:
         return nn.Identity()
 
@@ -286,7 +286,7 @@ class SimpleVaeGan(BaseLightningModule):
         self,
         obs_shape: Tuple[int, int, int] = (3, 224, 160),
         # optimizer
-        lr: float = 0.0005,
+        lr: float = 0.0003,
         adam_betas: float = (0.5, 0.999),
         # features
         z_size: int = 256,                                            # 256,                      # 256,
