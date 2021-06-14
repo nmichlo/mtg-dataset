@@ -43,9 +43,16 @@ def activation():
     return nn.LeakyReLU(1e-3, inplace=True)
 
 
-def norm(feat, bn=True):
+def norm_dsc(feat, bn=True):
     if bn:
         return nn.BatchNorm2d(feat)
+    else:
+        return nn.Identity()
+
+
+def norm_gen(feat, bn=True):
+    if bn:
+        return nn.Identity()  # nn.BatchNorm2d(feat)
     else:
         return nn.Identity()
 
@@ -86,7 +93,7 @@ class GeneratorBody(nn.Module):
             return nn.Sequential(
                 nn.Upsample(scale_factor=2),
                 nn.Conv2d(in_feat, out_feat, kernel_size=3, stride=1, padding=1),
-                    norm(out_feat, bn=bn),
+                    norm_gen(out_feat, bn=bn),
                     activation(),
             )
 
@@ -97,7 +104,7 @@ class GeneratorBody(nn.Module):
         self._generator = nn.Sequential(
             nn.Unflatten(dim=-1, unflattened_size=[in_features[0], H // scale, W // scale]),
             # CONV NET
-            # norm(in_features[0]),
+            # norm_gen(in_features[0]),
             *(upsample_block(inp, out, bn=i < len(in_features) - 2) for i, (inp, out) in enumerate(zip(in_features[:-1], in_features[1:]))),
             # PIXELS
             nn.Conv2d(pix_in_features, C, kernel_size=3, stride=1, padding=1),
@@ -121,7 +128,7 @@ class DiscriminatorBody(nn.Module):
         def discriminator_block(in_feat, out_feat, bn=True):
             return nn.Sequential(
                 nn.Conv2d(in_feat, out_feat, kernel_size=3, stride=2, padding=1),
-                    norm(out_feat, bn=bn),
+                    norm_dsc(out_feat, bn=bn),
                     activation(),
                     dropout2d(),
             )
@@ -383,7 +390,7 @@ class SimpleVaeGan(BaseLightningModule):
     def _train_stochastic_ae_forward(self, batch, compute_loss: bool = True):
         # feed forward with noise
         z = self.sgan.encode(batch)
-        # z += torch.randn_like(z)
+        z += torch.randn_like(z)
         recon = self.sgan.decode(z)
         # compute recon loss & regularizer -- like KL for sigma = 1, MSE from zero
         if compute_loss:
@@ -425,24 +432,30 @@ if __name__ == '__main__':
 
         # get dataset & visualise images
         datamodule = make_mtg_datamodule(
-            batch_size=64,
+            batch_size=32,
             load_path=data_path,
         )
 
         system = SimpleVaeGan(
-            # MEDIUM | batch_size=64 == 4070MiB & 2.47it/s
-            z_size=256,
-            hidden_size=384,
-            dsc_features=features(16, 128, num=5),
-            gen_features=features(128, 48, num=5),
-            gen_features_pix=32,
-
-            # LARGE
+            # MEDIUM | batch_size=64 gives 4070MiB at 2.47it/s
             # z_size=256,
-            # hidden_size=512,
-            # dsc_features=(16, 32, 64, 128, 192),
-            # gen_features=(256, 256, 192, 128, 96),
-            # gen_features_pix=64,
+            # hidden_size=384,
+            # dsc_features=features(16, 128, num=5),
+            # gen_features=features(128, 48, num=5),
+            # gen_features_pix=32,
+
+            # LARGE | batch_size=32 gives 5494MiB at 2.14it/s
+            # - params: generator_body     | trainable =   1.3M | non-trainable =   0.0
+            # - params: generator_head     | trainable =   3.4M | non-trainable =   0.0
+            # - params: encoder_body       | trainable = 722.5K | non-trainable =   0.0
+            # - params: encoder_head       | trainable =   3.6M | non-trainable =   0.0
+            # - params: discriminator_body | trainable = 722.5K | non-trainable =   0.0
+            # - params: discriminator_head | trainable =   3.4M | non-trainable =   0.0
+            z_size=384,                              # 256
+            hidden_size=512,                         # 512
+            dsc_features=(64, 96, 128, 192, 192),    # (16, 32, 64, 128, 192)
+            gen_features=(256, 224, 192, 128, 96),   # (256, 256, 192, 128, 96)
+            gen_features_pix=64,                     # 64
 
             # GENERAL
             share_enc=True,
@@ -460,8 +473,8 @@ if __name__ == '__main__':
             wandb=wandb,
             wandb_project='MTG-GAN',
             wandb_name='MTG-GAN',
-            wandb_kwargs=dict(tags=['medium']),
-            checkpoint_monitor=None,
+            wandb_kwargs=dict(tags=['large']),
+            checkpoint_monitor='ae_loss_rec',
             resume_from_checkpoint=resume_path,
         )
         trainer.fit(system, datamodule)
@@ -470,7 +483,7 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     main(
         data_path='data/mtg_default-cards_20210608210352_border-crop_60480x224x160x3_c9.h5',
-        resume_path=None, #'/home/nmichlo/workspace/playground/mtg-dataset/checkpoints/2021-06-13_14:43:56/epoch=13-step=17499.ckpt',
+        resume_path=None,
         wandb=True,
     )
 
