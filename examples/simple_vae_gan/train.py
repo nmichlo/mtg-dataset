@@ -58,8 +58,7 @@ def norm_gen(feat, bn=True):
 
 
 def dropout():
-    # return nn.Dropout(0.05)
-    return nn.Identity()
+    return nn.Dropout(0.25)
 
 
 def dropout2d():
@@ -286,7 +285,8 @@ class SimpleVaeGan(BaseLightningModule):
         self,
         obs_shape: Tuple[int, int, int] = (3, 224, 160),
         # optimizer
-        lr: float = 0.0003,
+        ae_lr: float = 0.0003,
+        lr: float = 0.0001,
         adam_betas: float = (0.5, 0.999),
         # features
         z_size: int = 256,                                            # 256,                      # 256,
@@ -297,8 +297,9 @@ class SimpleVaeGan(BaseLightningModule):
         share_enc: bool = True,
         # auto-encoder loss
         train_ae: bool = True,
-        ae_recon_loss='mse',
-        ae_beta=0.003,
+        ae_recon_loss: str ='mse',
+        ae_beta: float = 0.003,
+        ae_random_sample_scale: int = None,
         # loss components
         adversarial_sample: bool = True,
         adversarial_recons: bool = False,
@@ -390,7 +391,8 @@ class SimpleVaeGan(BaseLightningModule):
     def _train_stochastic_ae_forward(self, batch, compute_loss: bool = True):
         # feed forward with noise
         z = self.sgan.encode(batch)
-        z += torch.randn_like(z)
+        if self.hparams.ae_random_sample_scale is not None:
+            z += torch.randn_like(z) * self.hparams.ae_random_sample_scale
         recon = self.sgan.decode(z)
         # compute recon loss & regularizer -- like KL for sigma = 1, MSE from zero
         if compute_loss:
@@ -413,7 +415,7 @@ class SimpleVaeGan(BaseLightningModule):
         return F.binary_cross_entropy_with_logits(y_logits, y_targ, reduction='mean')
 
     def configure_optimizers(self):
-        opt_ae = torch.optim.Adam(self.sgan.params_ae, lr=self.hparams.lr, betas=self.hparams.adam_betas)
+        opt_ae = torch.optim.Adam(self.sgan.params_ae, lr=self.hparams.ae_lr, betas=self.hparams.adam_betas)
         opt_dsc = torch.optim.Adam(self.sgan.params_dsc, lr=self.hparams.lr, betas=self.hparams.adam_betas)
         opt_gen = torch.optim.Adam(self.sgan.params_gen, lr=self.hparams.lr, betas=self.hparams.adam_betas)
         return [opt_ae, opt_dsc, opt_gen], []
@@ -444,7 +446,7 @@ if __name__ == '__main__':
             # gen_features=features(128, 48, num=5),
             # gen_features_pix=32,
 
-            # LARGE | batch_size=32 gives 5494MiB at 2.14it/s
+            # LARGE | batch_size=32 gives 5530MiB at 2.08it/s
             # - params: generator_body     | trainable =   1.3M | non-trainable =   0.0
             # - params: generator_head     | trainable =   3.4M | non-trainable =   0.0
             # - params: encoder_body       | trainable = 722.5K | non-trainable =   0.0
@@ -453,13 +455,13 @@ if __name__ == '__main__':
             # - params: discriminator_head | trainable =   3.4M | non-trainable =   0.0
             z_size=384,                              # 256
             hidden_size=512,                         # 512
-            dsc_features=(64, 96, 128, 192, 192),    # (16, 32, 64, 128, 192)
+            dsc_features=(64, 96, 128, 192, 224),    # (16, 32, 64, 128, 192)
             gen_features=(256, 224, 192, 128, 96),   # (256, 256, 192, 128, 96)
             gen_features_pix=64,                     # 64
 
             # GENERAL
             share_enc=True,
-            ae_recon_loss='mse',
+            ae_recon_loss='mse_laplace',
         )
 
         # start training model

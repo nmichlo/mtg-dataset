@@ -176,10 +176,10 @@ class WandbContextManagerCallback(pl.Callback):
             keys_values['batch_size'] = trainer.datamodule.batch_size
         # overwrite keys
         keys_values.update(self._extra_entries)
+        wandb.config.update(keys_values, allow_val_change=True)
 
         print()
         for k, v in keys_values.items():
-            setattr(wandb.config, k, v)
             print(f'{k}: {repr(v)}')
         print()
 
@@ -296,7 +296,7 @@ def make_mtg_trainer(
         # checkpoint_callback=False,
         logger=logger,
         resume_from_checkpoint=resume_from_checkpoint,
-        callbacks=callbacks
+        callbacks=callbacks,
     )
 
 

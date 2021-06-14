@@ -65,16 +65,27 @@ class LaplaceMseLoss(nn.Module):
     https://arxiv.org/pdf/1806.02336.pdf
     """
 
-    def __init__(self, freq_ratio=0.5):
+    def __init__(self, freq_ratio=0.5, lazy_init=False):
         super().__init__()
         self._ratio = freq_ratio
-        self._kernel = nn.Parameter(torch.as_tensor([
-            [0,  1,  0],
-            [1, -4,  1],
-            [0,  1,  0],
-        ], dtype=torch.float32), requires_grad=False)
+        self._kernel = None
+        # if we want to switch the loss during training, or on an existing model, these params wont exist!
+        if not lazy_init:
+            self._init_kernel()
+
+    def _init_kernel(self, device=None):
+        if self._kernel is None:
+            self._kernel = nn.Parameter(torch.as_tensor([
+                [0,  1,  0],
+                [1, -4,  1],
+                [0,  1,  0],
+            ], dtype=torch.float32, device=device), requires_grad=False)
+            self.register_parameter('_kernel', self._kernel)
 
     def forward(self, x, target, reduction='mean'):
+        # create
+        self._init_kernel(x.device)
+        # convolve
         x_conv = torch_conv2d_channel_wise(x, self._kernel)
         t_conv = torch_conv2d_channel_wise(target, self._kernel)
         loss_orig = F.mse_loss(x, target, reduction=reduction)
