@@ -328,7 +328,7 @@ class SimpleVaeGan(BaseLightningModule):
         assert x_or_z.ndim in (2, 4)
         # auto-encoder forward
         if x_or_z.ndim == 4:
-            return self.sgan.forward(x_or_z)
+            return self.sgan(x_or_z)
         # generator forward
         elif x_or_z.ndim == 2:
             return self.sgan.generate(x_or_z)

@@ -23,6 +23,8 @@
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 
 import logging
+from typing import Callable
+from typing import Optional
 
 import torch
 from torch.optim import Adam
@@ -46,34 +48,47 @@ class MtgVaeSystem(BaseLightningModule):
 
     def __init__(
         self,
-        lr=1e-3,
-        alpha=1.0,
-        beta=0.003,
+        lr: float = 1e-3,
+        alpha: float = 1.0,
+        beta: float = 0.003,
         # model options
-        z_size=128,
-        repr_hidden_size=None,
-        repr_channels=16,
-        channel_mul=1.5,
-        channel_start=16,
+        z_size: int = 128,
+        repr_hidden_size: Optional[int] = None,
+        repr_channels: int = 16,
+        channel_mul: float = 1.5,
+        channel_start: int = 16,
+        channel_dec_mul: float = 1.0,
+        model_activation: str = 'leaky_relu',
+        model_norm: Optional[str] = None,
+        model_weight_init: Optional[str] = None,
         model_skip_mode='next',
-        model_smooth_upsample=False,
-        model_smooth_downsample=False,
+        model_skip_downsample: str = 'ave',     # max, ave
+        model_skip_upsample: str = 'bilinear',  # nearest, bilinear
+        model_downsample: str = 'stride',       # stride, max, ave
+        model_upsample: str = 'stride',         # stride, nearest, bilinear
         # loss options
-        recon_loss='mse',
+        recon_loss: str = 'mse',
     ):
         super().__init__()
         self.save_hyperparameters()
         # make model
         self.model = AutoEncoderSkips(
+            # sizes
             z_size=self.hparams.z_size,
             repr_hidden_size=self.hparams.repr_hidden_size,
-            repr_channels=self.hparams.repr_channels,
+            c_repr=self.hparams.repr_channels,
             channel_mul=self.hparams.channel_mul,
             channel_start=self.hparams.channel_start,
-            #
+            channel_dec_mul=self.hparams.channel_dec_mul,
+            # layers
+            weight_init=self.hparams.model_weight_init,
+            activation=self.hparams.model_activation,
+            norm=self.hparams.model_norm,
             skip_mode=self.hparams.model_skip_mode,
-            smooth_upsample=self.hparams.model_smooth_upsample,
-            smooth_downsample=self.hparams.model_smooth_downsample,
+            skip_upsample=self.hparams.model_skip_upsample,
+            skip_downsample=self.hparams.model_skip_downsample,
+            upsample=self.hparams.model_upsample,
+            downsample=self.hparams.model_downsample,
             sigmoid_out=False,
         )
         # get loss
@@ -102,7 +117,7 @@ class MtgVaeSystem(BaseLightningModule):
         }
 
     def forward(self, x):
-        return self.model.forward(x)
+        return self.model(x)
 
     def training_step(self, batch, batch_idx):
         recon, posterior, prior = self.model.forward_train(batch)
@@ -132,28 +147,61 @@ if __name__ == '__main__':
         # 5926MiB / 5932MiB (RTX2060)
 
         system = MtgVaeSystem(
-            lr=3e-4,
-            alpha=100,
-            beta=0.01,
-            # model options
-            z_size=1024,
-            repr_hidden_size=1024+128,  # 1536,
-            repr_channels=128,  # 32*5*7 = 1120, 44*5*7 = 1540, 56*5*7 = 1960
-            channel_mul=1.19,
-            channel_start=160,
-            model_skip_mode='inner',  # all, all_not_end, next_all, next_mid, none
-            model_smooth_downsample=True,
-            model_smooth_upsample=True,
             # training options
-            recon_loss='mse_laplace',
+            lr=3e-4,
+            alpha=1,
+            beta=0.001,
+            recon_loss='mse',
+
+            # MEDIUM MODEL: batch_size 32 -- 5898MiB -- 2.3it/s
+            # z_size=768,
+            # repr_hidden_size=None,  # 1024+128,
+            # repr_channels=64,       # 64*7*5 == 2240
+            # channel_mul=1.245,
+            # channel_start=120,
+            # channel_dec_mul=1.0,  # enc: 120->231, dec: 231->120
+
+            # MEDIUM MODEL ALT: batch_size 32 -- 5898MiB -- 2.3it/s
+            z_size=768,
+            repr_hidden_size=None,  # 1024+128,
+            repr_channels=64,       # 64*7*5 == 2240
+            channel_mul=1.26,
+            channel_start=96,
+            channel_dec_mul=1.3334,  # enc: 96->192, dec: 256->128
+
+            # SMALLER MODEL - batch_size=32 8.52it/s
+            # z_size=256,
+            # repr_hidden_size=None,  # 512,
+            # repr_channels=64,  # 32*5*7 = 1120, 44*5*7 = 1540, 56*5*7 = 1960
+            # channel_mul=1.25,
+            # channel_start=32,
+
+            # good model defaults
+            model_weight_init=None,
+            model_activation='swish',
+            model_norm='batch',
+            model_skip_mode='inner_some',  # inner_some, inner, all, none
+            model_skip_downsample='ave',
+            model_skip_upsample='bilinear',
+            model_downsample='stride',
+            model_upsample='stride',
         )
 
         # get dataset & visualise images
-        datamodule = make_mtg_datamodule(batch_size=32, load_path=data_path)
+        mean_std = (0.5, 0.5)  # TODO: compute actual mean
+        datamodule = make_mtg_datamodule(batch_size=32, load_path=data_path, mean_std=mean_std, in_memory=False)
         vis_imgs = torch.stack([datamodule.data[i] for i in [3466, 18757, 20000, 40000, 21586, 20541, 1100]])
 
         # start training model
-        trainer = make_mtg_trainer(train_epochs=500, resume_from_checkpoint=resume_path, visualize_input={'recons': vis_imgs})
+        h = system.hparams
+        trainer = make_mtg_trainer(
+            train_epochs=500,
+            resume_from_checkpoint=resume_path,
+            visualize_input={'recons': (vis_imgs, mean_std)},
+            wandb_project='MTG-VAE',
+            wandb_name=f'mtg-vae|{h.z_size}:{h.repr_hidden_size}:{h.repr_channels}:{h.channel_start}:{h.channel_mul}:{h.channel_dec_mul}',
+            wandb=True
+        )
         trainer.fit(system, datamodule)
 
     # ENTRYPOINT

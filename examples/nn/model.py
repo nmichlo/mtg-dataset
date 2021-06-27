@@ -42,31 +42,31 @@ from examples.nn.components import NormalDist
 def ConvDown(in_channels: int, out_channels: int, kernel_size: int = 4, last_activation: bool = False):
     return nn.Sequential(
         nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=2, padding=(kernel_size-1)//2),
-        *([Activation(norm_features=out_channels)] if last_activation else []),
+        *([Activation(shape_or_features=out_channels)] if last_activation else []),
     )
 
 # def ConvDown(in_channels: int, out_channels: int, kernel_size: int = 3):
 #     return nn.Sequential(
 #         nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, padding=(kernel_size-1)//2),
-#             # Activation(norm_features=out_channels),
+#             # Activation(shape_or_features=out_channels),
 #         # nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=kernel_size, padding=(kernel_size-1)//2),
 #             nn.AvgPool2d(kernel_size=2),
-#             Activation(norm_features=out_channels),
+#             Activation(shape_or_features=out_channels),
 #     )
 
 def ConvUp(in_channels: int, out_channels: int, kernel_size: int = 4, last_activation: bool = True):
     return nn.Sequential(
         nn.ConvTranspose2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=2, padding=(kernel_size-1)//2),
-        *([Activation(norm_features=None)] if last_activation else []),
+        *([Activation(shape_or_features=None)] if last_activation else []),
     )
 
 # def ConvUp(in_channels: int, out_channels: int, kernel_size: int = 3, last_activation=True):
 #     return nn.Sequential(
 #             nn.UpsamplingNearest2d(scale_factor=2),
 #         nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, padding=(kernel_size-1)//2),
-#             # Activation(norm_features=out_channels),
+#             # Activation(shape_or_features=out_channels),
 #         # nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=kernel_size, padding=(kernel_size-1)//2),
-#             *([Activation(norm_features=out_channels)] if last_activation else []),
+#             *([Activation(shape_or_features=out_channels)] if last_activation else []),
 #     )
 
 
@@ -75,16 +75,16 @@ def ConvUp(in_channels: int, out_channels: int, kernel_size: int = 4, last_activ
 # ========================================================================= #
 
 
-def ReprDown(in_size: int, hidden_size: Optional[int], out_size: int):
+def ReprDown(in_shape: Sequence[int], hidden_size: Optional[int], out_size: int):
     if hidden_size is None:
         return nn.Sequential(
                 nn.Flatten(),
-            nn.Linear(in_size, out_size),
+            nn.Linear(int(np.prod(in_shape)), out_size),
         )
     else:
         return nn.Sequential(
                 nn.Flatten(),
-            nn.Linear(in_size, hidden_size),
+            nn.Linear(int(np.prod(in_shape)), hidden_size),
                 Activation(),
             nn.Linear(hidden_size, out_size),
         )
@@ -181,7 +181,7 @@ class AutoEncoder(BaseAutoEncoder):
                 ConvDown(in_channels=c(1), out_channels=c(2)),
                 ConvDown(in_channels=c(2), out_channels=c(3)),
                 ConvDown(in_channels=c(3), out_channels=repr_channels),
-            ReprDown(in_size=repr_channels * 7 * 5, hidden_size=repr_hidden_size, out_size=z_size * 2),
+            ReprDown(in_shape=[repr_channels, 7, 5], hidden_size=repr_hidden_size, out_size=z_size * 2),
         )
 
         self._dec = nn.Sequential(

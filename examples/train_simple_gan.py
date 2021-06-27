@@ -148,7 +148,7 @@ class DCGAN(LightningModule):
         # improve the discriminator to correctly identify the generator TODO: I don't think the generator should be updated here?
         elif optimizer_idx == 1:
             loss_real = self.adversarial_loss(self.discriminator(batch), is_real=True)
-            loss_fake = self.adversarial_loss(self.discriminator(self.forward(z).detach()), is_real=False)
+            loss_fake = self.adversarial_loss(self.discriminator(self.generator(z).detach()), is_real=False)
             loss_dsc = 0.5 * loss_real + 0.5 * loss_fake
             self.log('loss_real', loss_real, prog_bar=False)
             self.log('loss_fake', loss_fake, prog_bar=False)
@@ -170,13 +170,8 @@ class DCGAN(LightningModule):
     @torch.no_grad()
     def on_epoch_end(self):
         # log sampled images
-        grid = torchvision.utils.make_grid(self.forward(self.validation_z))
+        grid = torchvision.utils.make_grid(self.generator(self.validation_z))
         self.logger.experiment.add_image('generated_images', grid, self.current_epoch)
-
-    # log sampled images -- TODO: this could be used in the vis callback!
-    # sample_imgs = self.generated_imgs[:6]
-    # grid = torchvision.utils.make_grid(sample_imgs)
-    # self.logger.experiment.add_image('generated_images', grid, 0)
 
 
 # ========================================================================= #

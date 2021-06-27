@@ -24,6 +24,7 @@
 
 from typing import Optional
 from typing import Sequence
+from typing import Union
 
 import torch
 from torch import nn as nn
@@ -94,28 +95,31 @@ class Swish(nn.Module):
         return x * torch.sigmoid(x)
 
 
-def Activation(norm_features: Optional[int] = None, activation: Optional[str] = 'leaky_relu', norm='instance'):
+def Activation(shape_or_features: Optional[Union[Sequence[int], int]] = None, activation: Optional[str] = 'leaky_relu', norm: Optional[str] = 'instance'):
     layers = []
     # make norm layer
-    # if norm_features is not None:
-    #     if norm == 'instance':
-    #         layers.append(nn.InstanceNorm2d(num_features=norm_features))
-    #     # if norm == 'batch':
-    #     #     layers.append(nn.BatchNorm2d(num_features=norm_features))
-    #     elif norm is not None:
-    #         raise KeyError(f'invalid norm mode: {norm}')
+    if (norm is not None) and (shape_or_features is not None):
+        # get components
+        if isinstance(shape_or_features, int):
+            C, H, W = shape_or_features, None, None
+        else:
+            C, H, W = shape_or_features
+        # get norm layers
+        if norm == 'instance':    layers.append(nn.InstanceNorm2d(num_features=C, momentum=0.05))
+        elif norm == 'batch':     layers.append(nn.BatchNorm2d(num_features=C,    momentum=0.05))
+        elif norm == 'layer_hw': layers.append(nn.LayerNorm(normalized_shape=[H, W]))
+        elif norm == 'layer_chw': layers.append(nn.LayerNorm(normalized_shape=[C, H, W]))
+        else:                     raise KeyError(f'invalid norm mode: {norm}')
     # make activation
-    # if activation == 'swish':
-    #     layers.append(Swish())
-    if activation == 'leaky_relu':
-        layers.append(nn.LeakyReLU(inplace=True))
-    elif activation is not None:
-        raise KeyError(f'invalid activation mode: {activation}')
+    if activation is not None:
+        if activation == 'swish':        layers.append(Swish())
+        elif activation == 'leaky_relu': layers.append(nn.LeakyReLU(inplace=True))
+        elif activation == 'relu':       layers.append(nn.ReLU(inplace=True))
+        elif activation == 'relu66':     layers.append(nn.ReLU(inplace=True))
+        else:                            raise KeyError(f'invalid activation mode: {activation}')
     # return model
-    if layers:
-        return nn.Sequential(*layers)
-    else:
-        return nn.Identity()
+    if layers: return nn.Sequential(*layers)
+    else:      return nn.Identity()
 
 
 # ========================================================================= #

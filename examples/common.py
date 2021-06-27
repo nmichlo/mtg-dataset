@@ -6,13 +6,17 @@ from functools import lru_cache
 from typing import Any
 from typing import Dict
 from typing import Optional
+from typing import Tuple
+from typing import Union
 
 import numpy as np
 import pytorch_lightning as pl
 import torch
+import torchvision.transforms
 from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
 from torch.utils.data import random_split
+from torchvision.transforms import Normalize
 
 from mtgdata.util import Hdf5Dataset
 
@@ -57,9 +61,8 @@ def count_params(model, trainable=None):
 
 
 class ToTensor(object):
-    def __init__(self, move_channels=True, to_hsv=False):
+    def __init__(self, move_channels=True):
         self._move_channels = move_channels
-        self._to_hsv = to_hsv
 
     def __call__(self, img):
         if self._move_channels:
@@ -96,7 +99,7 @@ class VisualiseCallback(pl.Callback):
     be a batch of images (B, C, H, W).
     """
 
-    def __init__(self, name: str, input_batch: torch.Tensor, every_n_steps=1000, log_local=True, log_wandb=False, is_hsv=False, figwidth=15):
+    def __init__(self, name: str, input_batch: torch.Tensor, every_n_steps=1000, log_local=True, log_wandb=False, mean_std: Optional[Tuple[float, float]] = None, figwidth=15):
         assert isinstance(input_batch, torch.Tensor)
         assert log_wandb or log_local
         assert isinstance(name, str) and name.strip()
@@ -106,9 +109,9 @@ class VisualiseCallback(pl.Callback):
         self._wandb = log_wandb
         self._local = log_local
         self._figwidth = figwidth
-        self._is_hsv = is_hsv
         self._input_batch = input_batch
         self._input_batch_is_images = (input_batch.ndim == 4)
+        self._mean_std = mean_std
 
     def on_train_batch_end(self, trainer: 'pl.Trainer', pl_module: 'pl.LightningModule', outputs, batch: torch.Tensor, batch_idx: int, dataloader_idx: int) -> None:
         self._count += 1
@@ -120,7 +123,12 @@ class VisualiseCallback(pl.Callback):
         # feed forward
         with torch.no_grad(), evaluate_context(pl_module) as eval_module:
             xs = self._input_batch.to(eval_module.device)
-            rs = eval_module.forward(xs)
+            rs = eval_module(xs)
+            # undo normalize
+            if self._mean_std is not None:
+                mean, std = self._mean_std
+                xs = (xs * std) + mean  # revert normalize step: xs = (xs - mean) / std
+                rs = (rs * std) + mean  # revert normalize step: rs = (rs - mean) / std
             # convert to uint8
             xs = torch.moveaxis(torch.clip(xs * 255, 0, 255).to(torch.uint8), 1, -1).detach().cpu().numpy()
             rs = torch.moveaxis(torch.clip(rs * 255, 0, 255).to(torch.uint8), 1, -1).detach().cpu().numpy()
@@ -148,17 +156,27 @@ class VisualiseCallback(pl.Callback):
 
 class Hdf5DataModule(pl.LightningDataModule):
 
-    def __init__(self, h5_path: str, h5_dataset_name: str = 'data', batch_size: int = 64, val_ratio: float = 0.1, num_workers: int = os.cpu_count()):
+    def __init__(self, h5_path: str, h5_dataset_name: str = 'data', batch_size: int = 64, val_ratio: float = 0.1, num_workers: int = os.cpu_count(), to_tensor=True, mean_std: Tuple[float, float] = None, transform=None, in_memory: bool = False):
         super().__init__()
         self._batch_size = batch_size
         self._val_ratio = val_ratio
         self._num_workers = num_workers
+        # get transforms
+        transforms = []
+        if to_tensor: transforms.append(ToTensor(move_channels=True))
+        if mean_std: transforms.append(Normalize(*mean_std))
+        if transform: transforms.append(transform)
         # load h5py data
         self._data = Hdf5Dataset(
             h5_path=h5_path,
             h5_dataset_name=h5_dataset_name,
-            transform=ToTensor(move_channels=True),
+            transform=torchvision.transforms.Compose(transforms),
         )
+        # load into memory
+        if in_memory:
+            print('loading into memory...', end=' ')
+            self._data = self._data.numpy_dataset()
+            print('done loading!')
         # self.dims is returned when you call dm.size()
         self.dims = self._data.shape[1:]
 
@@ -248,6 +266,12 @@ def make_mtg_datamodule(
     load_path: str = None,
     data_root: Optional[str] = None,
     convert_kwargs: Dict[str, Any] = None,
+    # extra data_loader transform
+    to_tensor=True,
+    transform=None,
+    mean_std: Optional[Tuple[float, float]] = None,
+    # memory
+    in_memory=False,
 ):
     from mtgdata.scryfall_convert import generate_converted_dataset
 
@@ -261,11 +285,17 @@ def make_mtg_datamodule(
         assert not data_root, '`data_root` cannot be set if `data_path` is specified'
         h5_path = load_path
 
+    # get transform
+
     return Hdf5DataModule(
         h5_path,
         batch_size=batch_size,
         val_ratio=val_ratio,
         num_workers=num_workers,
+        to_tensor=to_tensor,
+        mean_std=mean_std,
+        transform=transform,
+        in_memory=in_memory,
     )
 
 
@@ -276,7 +306,7 @@ def make_mtg_trainer(
     cuda: bool = torch.cuda.is_available(),
     # visualise
     visualize_period: int = 500,
-    visualize_input: Dict[str, torch.Tensor] = None,
+    visualize_input: Dict[str, Union[torch.Tensor, Tuple[torch.Tensor, Optional[Tuple[float, float]]]]] = None,
     # utils
     checkpoint_period: int = 2500,
     checkpoint_dir: str = 'checkpoints',
@@ -296,7 +326,8 @@ def make_mtg_trainer(
         callbacks.append(WandbContextManagerCallback())
     if visualize_period and (visualize_input is not None):
         for k, v in visualize_input.items():
-            callbacks.append(VisualiseCallback(name=k, input_batch=v, every_n_steps=visualize_period, log_wandb=wandb, log_local=not wandb))
+            v, mean_std = (v if isinstance(v, tuple) else (v, None))
+            callbacks.append(VisualiseCallback(name=k, input_batch=v, every_n_steps=visualize_period, log_wandb=wandb, log_local=not wandb, mean_std=mean_std))
 
     if checkpoint_period:
         from pytorch_lightning.callbacks import ModelCheckpoint
@@ -325,10 +356,10 @@ def make_mtg_trainer(
         logger=logger,
         resume_from_checkpoint=resume_from_checkpoint,
         callbacks=callbacks,
+        weights_summary='full',
     )
 
 
 # ========================================================================= #
 # END                                                                       #
 # ========================================================================= #
-
