@@ -23,6 +23,7 @@
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 
 import logging
+import os
 from typing import Callable
 from typing import Optional
 
@@ -146,12 +147,21 @@ if __name__ == '__main__':
         # settings:
         # 5926MiB / 5932MiB (RTX2060)
 
+        print('[initialising]: model')
         system = MtgVaeSystem(
             # training options
             lr=3e-4,
             alpha=1,
             beta=0.001,
             recon_loss='mse',
+
+            # LARGE MODEL ALT: batch_size 32 (2gpus) -- 2*11GB -- 2.0it/s
+            z_size=768,
+            repr_hidden_size=None,  # 1024+128,
+            repr_channels=64,  # 64*7*5 == 2240  # this should probably be increased, but it is slow! maybe continue downsampling beyond 5x7 (64*7*5==2240) -> 2x3 (64*7*5==384)
+            channel_mul=1.26,
+            channel_start=160,
+            channel_dec_mul=1.5,  # enc: 160->320, dec: 240->480
 
             # MEDIUM MODEL: batch_size 32 -- 5898MiB -- 2.3it/s
             # z_size=768,
@@ -162,19 +172,20 @@ if __name__ == '__main__':
             # channel_dec_mul=1.0,  # enc: 120->231, dec: 231->120
 
             # MEDIUM MODEL ALT: batch_size 32 -- 5898MiB -- 2.3it/s
-            z_size=768,
-            repr_hidden_size=None,  # 1024+128,
-            repr_channels=64,       # 64*7*5 == 2240
-            channel_mul=1.26,
-            channel_start=96,
-            channel_dec_mul=1.3334,  # enc: 96->192, dec: 256->128
+            # z_size=768,
+            # repr_hidden_size=None,  # 1024+128,
+            # repr_channels=64,       # 64*7*5 == 2240
+            # channel_mul=1.26,
+            # channel_start=96,
+            # channel_dec_mul=1.3334,  # enc: 96->192, dec: 256->128
 
-            # SMALLER MODEL - batch_size=32 8.52it/s
+            # SMALLER MODEL - batch_size=32 7.02it/s 2738MiB
             # z_size=256,
             # repr_hidden_size=None,  # 512,
-            # repr_channels=64,  # 32*5*7 = 1120, 44*5*7 = 1540, 56*5*7 = 1960
-            # channel_mul=1.25,
+            # repr_channels=32,  # 32*5*7 = 1120
+            # channel_mul=1.26,
             # channel_start=32,
+            # channel_dec_mul=1.5,  # enc: 32->64, dec: 128->64
 
             # good model defaults
             model_weight_init=None,
@@ -188,27 +199,38 @@ if __name__ == '__main__':
         )
 
         # get dataset & visualise images
+        print('[initialising]: data')
         mean_std = (0.5, 0.5)  # TODO: compute actual mean
-        datamodule = make_mtg_datamodule(batch_size=32, load_path=data_path, mean_std=mean_std, in_memory=False)
+        datamodule = make_mtg_datamodule(batch_size=32, load_path=data_path, mean_std=mean_std, in_memory=False, num_workers=32)
         vis_imgs = torch.stack([datamodule.data[i] for i in [3466, 18757, 20000, 40000, 21586, 20541, 1100]])
 
         # start training model
+        print('[initialising]: trainer')
         h = system.hparams
         trainer = make_mtg_trainer(
             train_epochs=500,
             resume_from_checkpoint=resume_path,
+            visualize_period=1000,
             visualize_input={'recons': (vis_imgs, mean_std)},
             wandb_project='MTG-VAE',
             wandb_name=f'mtg-vae|{h.z_size}:{h.repr_hidden_size}:{h.repr_channels}:{h.channel_start}:{h.channel_mul}:{h.channel_dec_mul}',
-            wandb=True
+            wandb=True,
+            # distributed
+            trainer_kwargs=dict(accelerator='ddp'),
+            cuda=-1,
         )
+
+        print('[training]:')
         trainer.fit(system, datamodule)
 
     # ENTRYPOINT
     logging.basicConfig(level=logging.INFO)
+    print('[starting]:')
     main(
-        data_path='data/mtg_default-cards_20210608210352_border-crop_60480x224x160x3_c9.h5',
-        resume_path=None,
+        data_path='/dev/shm/nmichlo/data/mtg_default-cards_20210608210352_border-crop_60480x224x160x3_c9.h5',
+        # data_path='/tmp/nmichlo/data/mtg_default-cards_20210608210352_border-crop_60480x224x160x3_c9.h5',
+        # data_path='data/mtg_default-cards_20210608210352_border-crop_60480x224x160x3_c9.h5',
+        resume_path=None,  # '/home/nmichlo/workspace/playground/mtg-dataset/checkpoints/2021-06-27_23:16:48/epoch=17-step=32499.ckpt',
     )
 
 

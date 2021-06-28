@@ -11,6 +11,7 @@ from typing import Union
 
 import numpy as np
 import pytorch_lightning as pl
+from pytorch_lightning.utilities import rank_zero_only
 import torch
 import torchvision.transforms
 from matplotlib import pyplot as plt
@@ -113,6 +114,7 @@ class VisualiseCallback(pl.Callback):
         self._input_batch_is_images = (input_batch.ndim == 4)
         self._mean_std = mean_std
 
+    @rank_zero_only
     def on_train_batch_end(self, trainer: 'pl.Trainer', pl_module: 'pl.LightningModule', outputs, batch: torch.Tensor, batch_idx: int, dataloader_idx: int) -> None:
         self._count += 1
         if self._count % self._every_n_steps != 0:
@@ -210,6 +212,7 @@ class WandbContextManagerCallback(pl.Callback):
     def __init__(self, extra_entries: dict = None):
         self._extra_entries = {} if (extra_entries is None) else extra_entries
 
+    @rank_zero_only
     def on_train_start(self, trainer: 'pl.Trainer', pl_module: 'pl.LightningModule') -> None:
         import wandb
 
@@ -229,6 +232,7 @@ class WandbContextManagerCallback(pl.Callback):
             print(f'{k}: {repr(v)}')
         print()
 
+    @rank_zero_only
     def on_train_end(self, trainer: 'pl.Trainer', pl_module: 'pl.LightningModule') -> None:
         import wandb
         wandb.finish()
@@ -303,7 +307,7 @@ def make_mtg_trainer(
     # training
     train_epochs: int = None,
     train_steps: int = None,
-    cuda: bool = torch.cuda.is_available(),
+    cuda: Union[bool, int] = torch.cuda.is_available(),
     # visualise
     visualize_period: int = 500,
     visualize_input: Dict[str, Union[torch.Tensor, Tuple[torch.Tensor, Optional[Tuple[float, float]]]]] = None,
@@ -312,6 +316,8 @@ def make_mtg_trainer(
     checkpoint_dir: str = 'checkpoints',
     checkpoint_monitor: Optional[str] = 'loss',
     resume_from_checkpoint: str = None,
+    # trainer kwargs
+    trainer_kwargs: dict = None,
     # logging
     wandb=False,
     wandb_name: str = None,
@@ -349,7 +355,7 @@ def make_mtg_trainer(
 
     # initialise model trainer
     return pl.Trainer(
-        gpus=1 if cuda else 0,
+        gpus=(1 if cuda else 0) if isinstance(cuda, bool) else cuda,
         max_epochs=train_epochs,
         max_steps=train_steps,
         # checkpoint_callback=False,
@@ -357,6 +363,8 @@ def make_mtg_trainer(
         resume_from_checkpoint=resume_from_checkpoint,
         callbacks=callbacks,
         weights_summary='full',
+        # extra kwargs
+        **(trainer_kwargs if trainer_kwargs else {}),
     )
 
 
