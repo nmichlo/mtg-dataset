@@ -1,7 +1,6 @@
 # mtgdata
 ijson
 tqdm
-numpy
 torchvision
 
 # IO
@@ -10,7 +9,3 @@ requests
 
 # scrape
 bs4
-
-# convert
-h5py
-torch
