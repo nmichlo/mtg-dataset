@@ -174,6 +174,16 @@ def dataset_save_meta(
 # ========================================================================= #
 
 
+def _speed_test(desc, dat):
+    # speed test helper function
+    import time
+    with tqdm(desc=desc) as p:
+        t = time.time()
+        while time.time() - t < 5:
+            obs = dat[np.random.randint(0, len(dat))]
+            p.update(n=1)
+
+
 # sane modes that won't use too much disk space
 SANE_MODES = {
     ('all_cards',     'small'),        # ~243280 cards ~3GB
@@ -291,8 +301,8 @@ def generate_converted_dataset(
     # test the datasets
     if convert_speed_test:
         hdat = Hdf5Dataset(path_data, 'data')
-        for i in tqdm(range(1500), desc='raw images test'): _ = data[i]
-        for i in tqdm(range(10000), desc='converted hdf5 test'): _ = hdat[i]
+        _speed_test('raw images speed test', data)
+        _speed_test('converted hdf5 speed test', hdat)
 
     # done!
     return path_data, path_meta
