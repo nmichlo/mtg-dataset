@@ -332,6 +332,29 @@ class ScryfallDataset(ImageFolder):
                 for i, file_name in enumerate(sorted(existing - required)):
                     logger.error(f'{i+1}: invalid file exists in dataset directory: {os.path.join(data_dir, file_name)}')
                 raise FileExistsError(f'additional images not in the dataset exist, specify: `clean_invalid_images=True` to delete these files.')
+        # check for empty directories left over
+        setnames = set(os.path.dirname(f) for u, f in url_file_tuples)
+        dirnames = set(f for f in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, f)))
+        if setnames - dirnames:
+            # we are missing sets
+            raise FileNotFoundError(f'Directories are missing in: {repr(data_dir)} for sets: {setnames - dirnames}')
+        elif dirnames - setnames:
+            # we have extra dirs -- delete the extra directories but make sure they are empty
+            if clean_invalid_images:
+                for i, setname in enumerate(dirnames - setnames):
+                    setdir = os.path.join(data_dir, setname)
+                    # check it is a dir
+                    if not os.path.isdir(setdir):
+                        raise NotADirectoryError(f'Cannot delete: {repr(setname)} in: {repr(data_dir)}, expected a directory!')
+                    # check for files contained
+                    contains_files = [f for f in os.listdir(setdir) if not f.startswith('.')]
+                    if os.listdir(setdir):
+                        raise FileExistsError(f'Cannot delete: {repr(setname)} in: {repr(data_dir)}, expected the directory to be empty, contains: {contains_files}')
+                    # cleanup!
+                    os.rmdir(setdir)
+                    logger.warning(f'{i+1}: invalid set directory in dataset directory was deleted: {setdir}')
+            else:
+                raise FileExistsError(f'Extra directories were found in: {repr(data_dir)} for sets: {dirnames - setnames}, these need to be deleted.')
         # return
         return data_dir, url_file_tuples
 

@@ -207,7 +207,7 @@ def generate_converted_dataset(
     out_img_type: str = 'border_crop',
     out_bulk_type: str = 'default_cards',
     out_obs_compression_lvl: int = 9,
-    out_obs_size: Optional[Tuple[int, int]] = (224, 160),  # if None, then the dataset is not resized
+    out_obs_size: Optional[Tuple[int, int]] = None,  # if None, then the dataset is not resized
     out_obs_channels_first: bool = False,
     # save options
     save_root: Optional[str] = None,
@@ -223,10 +223,20 @@ def generate_converted_dataset(
     convert_speed_test: bool = False,
 ) -> Tuple[str, str]:
 
+    # get the final output image size
     if out_obs_size is None:
-        out_obs_size = ScryfallDataset.IMG_SHAPES[out_img_type][:2]
+        final_size = ScryfallDataset.IMG_SHAPES[out_img_type][:2]
+    else:
+        default_h, default_w = ScryfallDataset.IMG_SHAPES[out_img_type][:2]
+        out_h, out_w = out_obs_size
+        if (out_h is None) and (out_w is None): out_h, out_w = default_h, default_w
+        elif (out_h is None): out_h = max(round(out_w * (default_h / default_w)), 1)
+        elif (out_w is None): out_w = max(round(out_h * (default_w / default_h)), 1)
+        final_size = (out_h, out_w)
 
-    height, width = out_obs_size
+    # log the information
+    height, width = final_size
+    logger.info(f'final output image size of: {repr(final_size)} based on out_obs_size={repr(out_obs_size)}')
 
     # download the dataset
     data = _make_conv_dataset(
@@ -235,7 +245,7 @@ def generate_converted_dataset(
         data_root=data_root,
         force_update=imgs_force_update,
         download_threads=imgs_download_threads,
-        resize=out_obs_size,
+        resize=final_size,
         transpose=out_obs_channels_first,
         clean_invalid_images=imgs_clean_invalid,
     )
@@ -312,21 +322,25 @@ if __name__ == '__main__':
         parser.add_argument('--clean-invalid-images', action='store_true')                     # delete invalid image files
         # extra args
         parser.add_argument('-o', '--out-root', type=str, default=None)         # output folder
-        parser.add_argument('-s', '--size', type=str, default='224x160')        # resized image shape: HEIGHT x WIDTH
+        parser.add_argument('-s', '--size', type=str, default='default')        # resized image shape: `<HEIGHT|?>x<WIDTH|?>` | `default` eg. --size=224x160, --size=512x? or --size==default
         parser.add_argument('-c', '--channels-first', action='store_true')      # if specified saves image channels first with the shape: (C, H, W) instead of: (H, W, C)
         parser.add_argument('--num-workers', type=int, default=os.cpu_count())  # number of workers to use when processing the dataset
         parser.add_argument('--batch-size', type=int, default=128)              # number of images to load in every batch when processing the dataset
         parser.add_argument('--skip-speed-test', action='store_true')           # if specified, disabled testing the before and after dataset speeds
         parser.add_argument('--suffix', type=str, default='')                   # string to add to the end of the file name
         parser.add_argument('--overwrite', action='store_true')                 # overwrite existing generated dataset files
-        parser.add_argument('--compression-lvl', type=int, default=9)           # the compression level of the h5py file (0 to 9)
+        parser.add_argument('--compression-lvl', type=int, default=4)           # the compression level of the h5py file (0 to 9)
         args = parser.parse_args()
 
         # update args
-        try:
-            args.height, args.width = (int(v) for v in args.size.split('x'))
-        except:
-            raise ValueError(f'invalid size argument: {repr(args.size)}, must be of format: "<height>x<width>", eg. "224x160"')
+        if args.size == 'default':
+            obs_size = None
+        else:
+            try:
+                height, width = (None if (v == '?') else int(v) for v in args.size.split('x'))
+                obs_size = (height, width)
+            except:
+                raise ValueError(f'invalid size argument: {repr(args.size)}, must be of format: "<height|?>x<width|?>" or "default", eg. "--size=224x160", "--size=224x?" or "--size=default"')
 
         logging.basicConfig(level=logging.INFO)
 
@@ -336,7 +350,7 @@ if __name__ == '__main__':
             out_img_type=args.img_type,
             out_bulk_type=args.bulk_type,
             out_obs_compression_lvl=args.compression_lvl,
-            out_obs_size=(args.height, args.width),
+            out_obs_size=obs_size,
             out_obs_channels_first=args.channels_first,
             # save options
             save_root=args.out_root,
