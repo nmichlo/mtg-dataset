@@ -21,6 +21,7 @@
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
+import warnings
 
 import h5py
 from torch.utils.data import Dataset as Dataset
@@ -30,6 +31,29 @@ from torch.utils.data import Dataset as Dataset
 # hdf5 utils                                                                #
 # NOTE: this class is taken from disent -- github.com/nmichlo/disent        #
 # ========================================================================= #
+
+
+class NumpyDataset(Dataset):
+
+    def __init__(self, data, transform=None):
+        self._data = data
+        self._transform = transform
+
+    def __iter__(self):
+        yield from (self[i] for i in range(len(self._data)))
+
+    def __len__(self):
+        return self._data.shape[0]
+
+    def __getitem__(self, item):
+        elem = self._data[item]
+        if self._transform is not None:
+            elem = self._transform(elem)
+        return elem
+
+    @property
+    def shape(self):
+        return self._data.shape
 
 
 class Hdf5Dataset(Dataset):
@@ -64,14 +88,18 @@ class Hdf5Dataset(Dataset):
             elem = self._transform(elem)
         return elem
 
-    def numpy(self):
-        if self._transform is not None:
-            warnings.warn('Transform is not applied to the data when load() is called.')
-        return self._hdf5_data[:]
-
     @property
     def shape(self):
         return self._hdf5_data.shape
+
+    def numpy(self, warn=True):
+        if warn:
+            if self._transform is not None:
+                warnings.warn('Transform is not applied to the data when numpy() is called.')
+        return self._hdf5_data[:]
+
+    def numpy_dataset(self) -> NumpyDataset:
+        return NumpyDataset(data=self.numpy(warn=False), transform=self._transform)
 
     def __enter__(self):
         return self
