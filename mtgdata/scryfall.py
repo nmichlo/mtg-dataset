@@ -22,11 +22,12 @@
 #  SOFTWARE.
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 
+
+import logging
 import os
 from collections import Counter
 from datetime import timedelta
 from glob import glob
-from logging import getLogger
 from types import SimpleNamespace
 from typing import Dict
 from typing import List
@@ -45,7 +46,7 @@ from mtgdata.util.proxy import ProxyDownloader
 from mtgdata.util.proxy import scrape_proxies
 
 
-logger = getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 # ========================================================================= #
@@ -183,32 +184,38 @@ class ScryfallAPI(object):
         # check image type
         assert img_type in cls.IMG_TYPES, f'Invalid image type {img_type=}, must be one of: {list(cls.IMG_TYPES.keys())}'
         # count number of skips
-        count, skips = 0, 0
+        count, skips, errors = 0, 0, 0
         # yield faces
         for card, bulk_info in cls._bulk_iter(bulk_type=bulk_type, bulk_path=bulk_path, return_bulk_info=True):
-            count += 1
-            # skip cards with placeholder or missing images
-            if card['image_status'] not in ('lowres', 'highres_scan'):
-                if card['image_status'] not in ('placeholder', 'missing'):
-                    logger.error(f'[SKIPPED] unknown card `image_status`: {card["image_status"]}')
-                skips += 1
-                continue
-            # ANY CARD WITH (card_faces AND image_uris) WILL NOT HAVE (image_uris IN card_faces)
-            # ie. if image_uris does not exist, check card_faces for data.
-            # ALSO: any card without image_uris can be assumed not to have an illustration_id (not the other way around)
-            # ie. the card_faces must be checked for these.
-            if 'image_uris' not in card:
-                if 'card_faces' not in card:
-                    logger.error(f'[SKIPPED] Scryfall error, card with no `image_uris` also has no `card_faces`: {card}')
+            try:
+                count += 1
+                # skip cards with placeholder or missing images
+                if card['image_status'] not in ('lowres', 'highres_scan'):
+                    if card['image_status'] not in ('placeholder', 'missing'):
+                        logger.error(f'[SKIPPED] unknown card `image_status`: {card["image_status"]}')
                     skips += 1
                     continue
-                for f_idx, _ in enumerate(card['card_faces']):
-                    yield cls._make_face_item(card, img_type=img_type, bulk_info=bulk_info, f_idx=f_idx)
-            else:
-                yield cls._make_face_item(card, img_type=img_type, bulk_info=bulk_info, f_idx=None)
+                # ANY CARD WITH (card_faces AND image_uris) WILL NOT HAVE (image_uris IN card_faces)
+                # ie. if image_uris does not exist, check card_faces for data.
+                # ALSO: any card without image_uris can be assumed not to have an illustration_id (not the other way around)
+                # ie. the card_faces must be checked for these.
+                if 'image_uris' not in card:
+                    if 'card_faces' not in card:
+                        logger.error(f'[SKIPPED] Scryfall error, card with no `image_uris` also has no `card_faces`: {card}')
+                        skips += 1
+                        continue
+                    for f_idx, _ in enumerate(card['card_faces']):
+                        yield cls._make_face_item(card, img_type=img_type, bulk_info=bulk_info, f_idx=f_idx)
+                else:
+                    yield cls._make_face_item(card, img_type=img_type, bulk_info=bulk_info, f_idx=None)
+            except Exception as e:
+                logger.error(f'failed to get card faces due to error: {repr(e)} for card: {card}')
+                skips += 1
+                errors += 1
+                continue
         # done iterating over cards
         if skips > 0:
-            logger.warning(f'[TOTAL SKIPS]: {skips} of {count} cards/faces')
+            logger.warning(f'[TOTAL SKIPS]: {skips} of {count} cards/faces, of which {errors} skips were errors!')
 
 
 # ========================================================================= #
@@ -360,41 +367,49 @@ class ScryfallDataset(ImageFolder):
 
 
 # ========================================================================= #
+# ENTRY POINT - HELPERS                                                     #
+# ========================================================================= #
+
+
+def _make_parser_scryfall_prepare(parser=None):
+    # make default parser
+    if parser is None:
+        import argparse
+        parser = argparse.ArgumentParser()
+    # these should match scryfall_convert.py
+    parser.add_argument('-b', '--bulk_type', type=str, default='default_cards',                    help="[default_cards|all_cards|oracle_cards|unique_artwork]. For more information, see: https://scryfall.com/docs/api/bulk-data")
+    parser.add_argument('-i', '--img-type', type=str, default='normal',                            help="[png|border_crop|art_crop|large|normal|small]. For more information, see: https://scryfall.com/docs/api/images")
+    parser.add_argument('-d', '--data-root', type=str, default=_data_dir(None, None),              help="download and cache directory location")
+    parser.add_argument('-f', '--force-update', action='store_true',                               help="overwrite existing files and ignore caches")
+    parser.add_argument('-t', '--download_threads', type=int, default=max(os.cpu_count() * 2, 64), help="number of threads to use when downloading files")
+    parser.add_argument('--clean-invalid-images', action='store_true',                             help="delete invalid image files")
+    return parser
+
+
+def _run_scryfall_prepare(args):
+    # download the dataset
+    data = ScryfallDataset(
+        bulk_type=args.bulk_type,
+        img_type=args.img_type,
+        data_root=args.data_root,
+        force_update=args.force_update,
+        download_threads=args.download_threads,
+        clean_invalid_images=args.clean_invalid_images,
+    )
+    # information
+    logger.info(f'Finished downloading {len(data)} images for: {repr(data.bulk_type)} {repr(data.bulk_date)} {repr(data.img_type)}')
+
+
+# ========================================================================= #
 # ENTRY POINT                                                               #
 # ========================================================================= #
 
 
 if __name__ == '__main__':
-
-    def _command_line_app():
-        import argparse
-        import logging
-
-        # parse arguments
-        parser = argparse.ArgumentParser()
-        parser.add_argument('-b', '--bulk_type', type=str, default='default_cards')            # SEE: https://scryfall.com/docs/api/bulk-data
-        parser.add_argument('-i', '--img-type', type=str, default='border_crop')               # SEE: https://scryfall.com/docs/api/images
-        parser.add_argument('-d', '--data-root', type=str, default=_data_dir(None, None))      # download and cache directory location
-        parser.add_argument('-f', '--force-update', action='store_true')                       # overwrite existing files and ignore caches
-        parser.add_argument('-t', '--download_threads', type=int, default=os.cpu_count() * 2)  # number of threads to use when downloading files
-        parser.add_argument('--clean-invalid-images', action='store_true')                     # delete invalid image files
-        args = parser.parse_args()
-
-        # download the dataset
-        logging.basicConfig(level=logging.INFO)
-        data = ScryfallDataset(
-            bulk_type=args.bulk_type,
-            img_type=args.img_type,
-            data_root=args.data_root,
-            force_update=args.force_update,
-            download_threads=args.download_threads,
-            clean_invalid_images=args.clean_invalid_images,
-        )
-
-        # information
-        logger.info(f'Finished downloading {len(data)} images for: {repr(data.bulk_type)} {repr(data.bulk_date)} {repr(data.img_type)}')
-
-    _command_line_app()
+    # initialise logging
+    logging.basicConfig(level=logging.INFO)
+    # run application
+    _run_scryfall_prepare(_make_parser_scryfall_prepare().parse_args())
 
 
 # ========================================================================= #
