@@ -1,4 +1,4 @@
 # convert
-numpy
-h5py
-torch
+numpy>=1.19.0
+h5py>=3.5.0
+torch>=1.6.0

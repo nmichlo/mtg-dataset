@@ -17,6 +17,15 @@
 
 <br/>
 
+## ⚡️ &nbsp;Quickstart
+
+1. Install `mtgdata` with `pip install mtgdata`
+
+2. Prepare or convert the MTG data using the command line with `python -m mtgdata --help`
+
+
+<br/>
+
 ## 📋 &nbsp;Features
 
 **MTG Card Face Dataset**
@@ -41,14 +50,20 @@
 
 ### Command Line
 
-You can download all the `normal` quality [images](https://scryfall.com/docs/api/images)
+You can prepare (download) all the `normal` quality [images](https://scryfall.com/docs/api/images)
 from the `default` Scryfall [bulk](https://scryfall.com/docs/api/bulk-data) data
-by running the file `mtgdata.scryfall`. Various arguments can be specified, please
-see the argparse arguments at the bottom of the file for more information.
+by running `mtgdata/__main__.py`:
 
 ```bash
-python3 mtgdata/scryfall
+python3 mtgdata prepare --help
 ```
+
+Otherwise, you can instead convert the downloaded images into an hdf5 dataset by running:
+
+```bash
+python3 mtgdata convert --help
+```
+
 
 ### Programmatically
 
