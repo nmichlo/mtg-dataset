@@ -54,7 +54,7 @@ setuptools.setup(
 
     install_requires=install_requires,
 
-    url="https://github.com/nmichlo/mtgdata",
+    url="https://github.com/nmichlo/mtg-dataset",
     description="MTG image dataset with automatic image scraping and conversion.",
     long_description=long_description,
     long_description_content_type="text/markdown",
