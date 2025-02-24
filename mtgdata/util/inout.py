@@ -26,8 +26,8 @@ import os
 from logging import getLogger
 
 import requests
-from tqdm import tqdm
 
+from doorway import io_download
 
 logger = getLogger(__name__)
 
@@ -35,23 +35,6 @@ logger = getLogger(__name__)
 # ========================================================================= #
 # io                                                                        #
 # ========================================================================= #
-
-
-# TODO: merge with proxy
-def direct_download(url, path):
-    # paths
-    path_temp = path + '.dl'
-    # download
-    with requests.get(url, stream=True) as r:
-        r.raise_for_status()
-        with open(path_temp, 'wb') as f:
-            pbar = tqdm(unit="B", total=int(r.headers['Content-Length']), unit_scale=True, unit_divisor=1024, desc=f'Downloading: {path}')
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    pbar.update(len(chunk))
-                    f.write(chunk)
-        # atomic
-        os.rename(path_temp, path)
 
 
 # TODO: merge with proxy
@@ -72,7 +55,7 @@ def smart_download(url, file=None, folder=None, overwrite=False):
         logger.debug(f'[MADE] made parent folder: {folder}')
         os.makedirs(folder, exist_ok=True)
     # download
-    direct_download(url, path)
+    io_download(url, str(path))
     # return path to file
     return path
 

@@ -42,8 +42,8 @@ from tqdm import tqdm
 
 from mtgdata.util.inout import get_json
 from mtgdata.util.inout import smart_download
-from mtgdata.util.proxy import ProxyDownloader
-from mtgdata.util.proxy import scrape_proxies
+from doorway.x import ProxyDownloader
+from doorway.x import scrape_proxies
 
 
 logger = logging.getLogger(__name__)
@@ -381,7 +381,7 @@ def _make_parser_scryfall_prepare(parser=None):
     parser.add_argument('-i', '--img-type', type=str, default='normal',                            help="[png|border_crop|art_crop|large|normal|small]. For more information, see: https://scryfall.com/docs/api/images")
     parser.add_argument('-d', '--data-root', type=str, default=_data_dir(None, None),              help="download and cache directory location")
     parser.add_argument('-f', '--force-update', action='store_true',                               help="overwrite existing files and ignore caches")
-    parser.add_argument('-t', '--download_threads', type=int, default=max(os.cpu_count() * 2, 64), help="number of threads to use when downloading files")
+    parser.add_argument('-t', '--download_threads', type=int, default=max(os.cpu_count() * 2, 256), help="number of threads to use when downloading files")
     parser.add_argument('--clean-invalid-images', action='store_true',                             help="delete invalid image files")
     return parser
 
