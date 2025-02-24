@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61", "setuptools_scm[toml]>=6.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["find:"]
+
+[project]
+name = "mtgdata"
+dynamic = ["version"]  # Version is managed by setuptools_scm
+description = "MTG image dataset with automatic image scraping and conversion."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Nathan Juraj Michlo", email = "NathanJMichlo@gmail.com" }]
+urls = { Homepage = "https://github.com/nmichlo/mtg-dataset" }
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Intended Audience :: Science/Research"
+]
+
+dependencies = [
+    # mtgdata
+    "ijson>=3.0.0",
+    "tqdm>=4.50.0",
+    "torchvision>=0.9.0",
+    # IO
+    "cachier>=1.5.0",
+    "requests>=2.0.0",
+    # scrape
+    "beautifulsoup4>=4.0.0",
+]
+
+
+[project.optional-dependencies]
+
+convert = [
+    # convert
+    "numpy>=1.19.0",
+    "h5py>=3.5.0",
+    "torch>=1.6.0",
+]
+
