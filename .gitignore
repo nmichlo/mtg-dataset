@@ -136,3 +136,5 @@ OLD/
 data/
 .idea/
 /lightning_logs/
+*.zip
+*.db
