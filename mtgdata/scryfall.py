@@ -1,7 +1,7 @@
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 #  MIT License
 #
-#  Copyright (c) 2021 Nathan Juraj Michlo
+#  Copyright (c) 2025 Nathan Juraj Michlo
 #
 #  Permission is hereby granted, free of charge, to any person obtaining a copy
 #  of this software and associated documentation files (the "Software"), to deal
@@ -22,22 +22,22 @@
 #  SOFTWARE.
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 
-import json
+import dataclasses
 import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterator, Literal, NamedTuple
-from typing import Optional
+from typing import Any, Iterator, Literal
 from typing import Tuple
 
 import duckdb
+import pydantic
 import pytz
+import requests
 from PIL import Image
 
-from doorway import io_download
+from doorway import AtomicOpen, io_download
 from doorway.x import ProxyDownloader
-from mtgdata.util.inout import get_json
 
 
 logger = logging.getLogger(__name__)
@@ -50,21 +50,6 @@ logger = logging.getLogger(__name__)
 
 CACHE_STALE_AFTER = timedelta(days=365)
 
-
-def _data_dir(data_root: Optional[str], relative_path: Optional[str], env_key='DATA_ROOT') -> str:
-    if data_root is None:
-        data_root = os.environ.get(env_key, 'data')
-    # check root exists
-    if os.path.exists(data_root):
-        if not os.path.isdir(data_root):
-            raise NotADirectoryError(f'specified path for {repr(env_key)} is not a directory: {repr(data_root)} ({repr(os.path.abspath(data_root))})')
-    else:
-        os.makedirs(data_root, exist_ok=True)
-        logger.warning(f'created missing directory for {repr(env_key)}: {repr(data_root)} ({repr(os.path.abspath(data_root))})')
-    # return joined path
-    if relative_path is None:
-        return data_root
-    return os.path.join(data_root, relative_path)
 
 # ========================================================================= #
 # Scryfall API Helper                                                       #
@@ -99,7 +84,8 @@ _IMG_SHAPES: dict[ImageType, Tuple[int, int, int] | None] = {
 # ========================================================================= #
 
 
-class ScryfallCardFace(NamedTuple):
+@dataclasses.dataclass(frozen=True)
+class ScryfallCardFace:
     # query
     id: str
     oracle_id: str
@@ -126,97 +112,145 @@ class ScryfallCardFace(NamedTuple):
     def open_image(self, verbose: bool = True) -> Image.Image:
         return Image.open(self.download(verbose=verbose))
 
+    @property
+    def url_path_pair(self) -> Tuple[str, str]:
+        return self.img_uri, str(self.img_path)
 
-class ScryfallCardFaceDataset:
+
+class _DatasetIndex(pydantic.BaseModel):
+    bulk_data: dict[str, Any]
+    last_updated: datetime
+
+    @property
+    def time_since_last_updated(self) -> timedelta:
+        return datetime.now(pytz.utc) - self.last_updated
+
+    def is_stale(self) -> bool:
+        return self.time_since_last_updated > CACHE_STALE_AFTER
+
+    @classmethod
+    def _query_bulk_data(cls, bulk_type: BulkType) -> dict[str, Any]:
+        response = requests.get(f'https://api.scryfall.com/bulk-data')
+        response.raise_for_status()
+        data = response.json()
+        # find the correct bulk data
+        for item in data['data']:
+            if item['type'] == bulk_type:
+                return item
+        raise ValueError(
+            f'bulk type {bulk_type} not found in bulk data list, valid types are: {[d["type"] for d in data["data"]]}'
+        )
+
+    @classmethod
+    def from_query(cls, bulk_type: BulkType) -> '_DatasetIndex':
+        return cls(
+            bulk_data=cls._query_bulk_data(bulk_type),
+            last_updated=datetime.now(pytz.utc),
+        )
+
+
+class ScryfallDataset:
+    """
+    Scryfall Card Face Dataset.
+
+    This class is used to download and cache card face images from the Scryfall API.
+    1. Check the prior index file to see if the bulk data is stale.
+        b. If needed, download the new bulk data file, to overwrite the old one.
+        a. Then update the index file.
+    2. Parse the bulk data file and iterate over the card faces.
+
+    NOTE: we do NOT handle removing stale images. We assume that scryfall infrequently
+          updates their images. Downstream systems should NOT glob the image directory
+          rather they should use the iterator to get the latest images. This way
+          invalid images will be skipped.
+    """
 
     def __init__(
         self,
         img_type: ImageType = 'normal',
         bulk_type: BulkType = 'default_cards',
         *,
-        root_dir: Path | None = None,
+        ds_dir: Path | None = None,
     ):
         self._img_type = img_type
         self._bulk_type = bulk_type
         # get root dir
-        if root_dir is None:
-            root_dir = os.environ.get('DATA_ROOT', 'data')
-            root_dir = Path(root_dir) / 'scryfall' / bulk_type / img_type
+        if ds_dir is None:
+            data_root = os.environ.get('DATA_ROOT', 'data')
+            ds_dir = Path(data_root) / 'scryfall' / bulk_type / img_type
         # check dirs
-        root_dir.mkdir(parents=True, exist_ok=True)
-        if not root_dir.is_dir():
-            raise NotADirectoryError(f'path is not a directory: {root_dir}')
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        if not ds_dir.is_dir():
+            raise NotADirectoryError(f'path is not a directory: {ds_dir}')
         # initialise dataset
-        self._path_sets_dir = root_dir / 'sets'
-        self._path_ddb = root_dir / 'index.ddb'
-        self._path_bulk = root_dir / 'bulk.json'
-        self._key_bulk_info = f'bulk_info'
-        # initialize
-        self._download_bulk_data()
+        self.__ds_dir = ds_dir
+        self.__path_index = ds_dir / 'index.json'
+        self.__path_bulk = ds_dir / 'bulk.json'
+
+    @property
+    def img_type(self) -> ImageType:
+        return self._img_type
+
+    @property
+    def bulk_type(self) -> BulkType:
+        return self._bulk_type
+
+    @property
+    def ds_dir(self) -> Path:
+        return self.__ds_dir
+
+    @property
+    def _path_sets_dir(self) -> Path:
+        return self.__ds_dir / 'sets'
 
     # ~=~=~ DB ~=~=~
 
-    def _get_db_connection(self, conn: duckdb.DuckDBPyConnection | None = None) -> duckdb.DuckDBPyConnection:
-        if conn is not None:
-            return conn
-        # should cache
-        conn = duckdb.connect(self._path_ddb)
-        conn.execute("""CREATE TABLE IF NOT EXISTS cache (id STRING PRIMARY KEY NOT NULL, last_updated TIMESTAMPTZ NOT NULL, data JSON NOT NULL)""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS card_last_updated (card_id STRING PRIMARY KEY NOT NULL, card_set_code STRING NOT NULL, last_updated TIMESTAMPTZ NOT NULL)""")
-        return conn
+    def _read_index(self) -> _DatasetIndex | None:
+        if self.__path_index.exists():
+            with AtomicOpen(self.__path_index, 'r') as fp:
+                return _DatasetIndex.model_validate_json(fp.read())
+        else:
+            return None
 
-    # -- cache -- #
-
-    def _db_get_cache_value(self, id: str, *, conn: duckdb.DuckDBPyConnection | None = None) -> Tuple[dict | None, timedelta]:
-        conn = self._get_db_connection(conn)
-        cursor = conn.execute(f"""SELECT data, last_updated FROM cache WHERE id = ?""", [id])
-        result = cursor.fetchone()
-        if result is not None:
-            return json.loads(result[0]), datetime.now(pytz.utc) - result[1]
-        return None, datetime.now() - datetime.min
-
-    def _db_put_cache_value(self, id: str, data: dict, *, conn: duckdb.DuckDBPyConnection | None = None):
-        conn = self._get_db_connection(conn)
-        cursor = conn.execute(f"""INSERT OR REPLACE INTO cache (id, last_updated, data) VALUES (?, now(), ?)""",[id, data])
-        return cursor
-
-    def _db_del_cache_value(self, id: str, *, conn: duckdb.DuckDBPyConnection | None = None):
-        conn = self._get_db_connection(conn)
-        cursor = conn.execute(f"""DELETE FROM cache WHERE id = ?""", [id])
-        return cursor
+    def _update_index(self, index: _DatasetIndex):
+        with AtomicOpen(self.__path_index, 'w') as fp:
+            fp.write(index.model_dump_json())
 
     # ~=~=~ bulk data ~=~=~
 
-    @classmethod
-    def _get_bulk_data_info(cls, bulk_type: BulkType):
-        bulk_data_list = get_json(f'https://api.scryfall.com/bulk-data')['data']
-        for item in bulk_data_list:
-            if item['type'] == bulk_type:
-                return item
-        raise ValueError(
-            f'bulk type {bulk_type} not found in bulk data list, valid types are: {[d["type"] for d in bulk_data_list]}'
-        )
+    def invalidate_cache(self):
+        # call this to force a cache update
+        self.__path_index.unlink(missing_ok=True)
+        self.__path_bulk.unlink(missing_ok=True)
+        return self
 
-    def _download_bulk_data(self, force_update: bool = False) -> Path:
-        bulk_data_info, last_updated = self._db_get_cache_value(self._key_bulk_info)
+    # ~=~=~ bulk data ~=~=~
+
+    def _download_bulk_data(self) -> Path:
+        index = self._read_index()
         # stale / non-existent
-        if bulk_data_info is None or last_updated > CACHE_STALE_AFTER or force_update:
-            bulk_data_info = self._get_bulk_data_info(self._bulk_type)
-            # now download bulk data
-            self._db_del_cache_value(self._key_bulk_info)
-            self._path_bulk.unlink(missing_ok=True)
-            io_download(
-                src_url=bulk_data_info['download_uri'],
-                dst_path=str(self._path_bulk),
-                overwrite_existing=True,
-            )
-            self._db_put_cache_value(self._key_bulk_info, bulk_data_info)
-        # result
-        return self._path_bulk
+        if index is None or index.is_stale():
+            new_index = _DatasetIndex.from_query(self._bulk_type)
+            # if bulk info is different, then download
+            if (index is None) or (index.bulk_data != new_index.bulk_data):
+                io_download(
+                    src_url=new_index.bulk_data['download_uri'],
+                    dst_path=str(self.__path_bulk),
+                    overwrite_existing=True,
+                )
+            self._update_index(new_index)
+        # done
+        assert self.__path_bulk.exists()
+        return self.__path_bulk
 
     # ~=~=~ yield card faces ~=~=~
 
-    def yield_card_faces(self) -> Iterator['ScryfallCardFace']:
+    def __iter__(self) -> Iterator['ScryfallCardFace']:
+        return self.yield_all()
+
+    def yield_all(self, shared_proxy: ProxyDownloader | None = None) -> Iterator['ScryfallCardFace']:
+        # fetch the bulk data
+        path_bulk = self._download_bulk_data()
         query = f"""
             SELECT
                 t.id,
@@ -227,7 +261,7 @@ class ScryfallCardFaceDataset:
                 img.image_uri,
                 '{self._img_type}' AS img_type,
                 '{self._bulk_type}' AS bulk_type
-            FROM read_json('{self._path_bulk}') t
+            FROM read_json('{path_bulk}') t
             CROSS JOIN LATERAL (
               VALUES
                 (t.image_uris.{self._img_type}),
@@ -241,16 +275,36 @@ class ScryfallCardFaceDataset:
             row = cursor.fetchone()
             if row is None:
                 break
-            yield ScryfallCardFace(*row, _sets_dir=self._path_sets_dir)
+            yield ScryfallCardFace(*row, _sets_dir=self._path_sets_dir, _proxy=shared_proxy)
 
+    def download_all(
+        self,
+        proxy: ProxyDownloader | None = None,
+        threads: int = max(os.cpu_count() * 2, 8),
+        verbose: bool = True,
+    ) -> int:
+        total_cards = 0
 
+        def _itr():
+            nonlocal total_cards
+            for item in self.yield_all(shared_proxy=proxy):
+                yield item.url_path_pair
+                total_cards += 1
 
+        if not proxy:
+            proxy = ProxyDownloader()
 
+        proxy.download_threaded(
+            _itr(),
+            exists_mode='skip',
+            verbose=verbose,
+            make_dirs=True,
+            threads=threads,
+            attempts=128,
+            timeout=8,
+        )
+        return total_cards
 
-class ScryfallAPI:
-    pass
-class ScryfallDataset:
-    pass
 
 # ========================================================================= #
 # ENTRY POINT - HELPERS                                                     #
@@ -263,35 +317,27 @@ def _make_parser_scryfall_prepare(parser=None):
         import argparse
         parser = argparse.ArgumentParser()
     # these should match scryfall_convert.py
-    parser.add_argument('-b', '--bulk_type', type=str, default='default_cards',                    help="[default_cards|all_cards|oracle_cards|unique_artwork]. For more information, see: https://scryfall.com/docs/api/bulk-data")
-    parser.add_argument('-i', '--img-type', type=str, default='normal',                            help="[png|border_crop|art_crop|large|normal|small]. For more information, see: https://scryfall.com/docs/api/images")
-    parser.add_argument('-d', '--data-root', type=str, default=_data_dir(None, None),              help="download and cache directory location")
-    parser.add_argument('-f', '--force-update', action='store_true',                               help="overwrite existing files and ignore caches")
-    parser.add_argument('-t', '--download_threads', type=int, default=max(os.cpu_count() * 2, 256), help="number of threads to use when downloading files")
-    parser.add_argument('--clean-invalid-images', action='store_true',                             help="delete invalid image files")
+    parser.add_argument('-b', '--bulk_type', type=str, default='default_cards',                     help="[default_cards|all_cards|oracle_cards|unique_artwork]. For more information, see: https://scryfall.com/docs/api/bulk-data")
+    parser.add_argument('-i', '--img-type', type=str, default='normal',                             help="[png|border_crop|art_crop|large|normal|small]. For more information, see: https://scryfall.com/docs/api/images")
+    parser.add_argument('-d', '--data-root', type=str, default=None,                                help="download and cache directory location")
+    parser.add_argument('-f', '--force-update', action='store_true',                                help="overwrite existing files and ignore caches")
+    parser.add_argument('-t', '--download_threads', type=int, default=max(os.cpu_count() * 2, 128), help="number of threads to use when downloading files")
     return parser
 
 
 def _run_scryfall_prepare(args):
-    ds = ScryfallCardFaceDataset(
-        bulk_type=args.bulk_type,
-        img_type=args.img_type,
-        force_update=args.force_update,
-    )
-    for i, item in enumerate(ds.yield_card_faces_and_download()):
-        print(item)
+    if args.data_root is not None:
+        os.environ['DATA_ROOT'] = args.data_root
 
-    # # download the dataset
-    # data = ScryfallDataset(
-    #     bulk_type=args.bulk_type,
-    #     img_type=args.img_type,
-    #     data_root=args.data_root,
-    #     force_update=args.force_update,
-    #     download_threads=args.download_threads,
-    #     clean_invalid_images=args.clean_invalid_images,
-    # )
-    # # information
-    # logger.info(f'Finished downloading {len(data)} images for: {repr(data.bulk_type)} {repr(data.img_type)}')
+    ds = ScryfallDataset(bulk_type=args.bulk_type, img_type=args.img_type)
+
+    if args.force_update:
+        logger.info('Forcing cache update...')
+        ds.invalidate_cache()
+
+    logger.info(f'Downloading images for: {repr(args.bulk_type)} {repr(args.img_type)}')
+    total_cards = ds.download_all(threads=args.download_threads, verbose=True)
+    logger.info(f'Finished downloading {total_cards} images for: {repr(args.bulk_type)} {repr(args.img_type)}')
 
 
 # ========================================================================= #
