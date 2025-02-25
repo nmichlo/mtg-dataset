@@ -33,8 +33,6 @@ import h5py
 import numpy as np
 from tqdm import tqdm
 
-from mtgdata.scryfall import _data_dir
-from mtgdata.scryfall import ScryfallAPI
 from mtgdata.scryfall import ScryfallDataset
 from mtgdata.util import Hdf5Dataset
 

@@ -23,21 +23,23 @@
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 
 import dataclasses
+import json
 import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterator, Literal
+from typing import Any, Iterator, Literal, TYPE_CHECKING
 from typing import Tuple
 
 import duckdb
-import pydantic
 import pytz
 import requests
-from PIL import Image
 
 from doorway import AtomicOpen, io_download
 from doorway.x import ProxyDownloader
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 
 logger = logging.getLogger(__name__)
@@ -109,7 +111,12 @@ class ScryfallCardFace:
         self._proxy.download(self.img_uri, str(self.img_path), exists_mode='skip', verbose=verbose, make_dirs=True, attempts=128, timeout=8)
         return self.img_path
 
-    def open_image(self, verbose: bool = True) -> Image.Image:
+    def open_image(self, verbose: bool = True) -> "Image.Image":
+        try:
+            from PIL import Image
+        except ImportError:
+            raise ImportError('PIL is not installed, please install it using: `pip install pillow`')
+
         return Image.open(self.download(verbose=verbose))
 
     @property
@@ -117,7 +124,8 @@ class ScryfallCardFace:
         return self.img_uri, str(self.img_path)
 
 
-class _DatasetIndex(pydantic.BaseModel):
+@dataclasses.dataclass()
+class _DatasetIndex:
     bulk_data: dict[str, Any]
     last_updated: datetime
 
@@ -208,13 +216,21 @@ class ScryfallDataset:
     def _read_index(self) -> _DatasetIndex | None:
         if self.__path_index.exists():
             with AtomicOpen(self.__path_index, 'r') as fp:
-                return _DatasetIndex.model_validate_json(fp.read())
+                dat = json.load(fp)
+                return _DatasetIndex(
+                    bulk_data=dat['bulk_data'],
+                    last_updated=datetime.fromisoformat(dat['last_updated']),
+                )
         else:
             return None
 
     def _update_index(self, index: _DatasetIndex):
         with AtomicOpen(self.__path_index, 'w') as fp:
-            fp.write(index.model_dump_json())
+            dat = {
+                'bulk_data': index.bulk_data,
+                'last_updated': index.last_updated.isoformat(),
+            }
+            json.dump(dat, fp)
 
     # ~=~=~ bulk data ~=~=~
 
