@@ -22,28 +22,22 @@
 #  SOFTWARE.
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 
-
+import json
 import logging
 import os
-from collections import Counter
-from datetime import timedelta
-from glob import glob
-from types import SimpleNamespace
-from typing import Dict
-from typing import List
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Iterator, Literal, NamedTuple
 from typing import Optional
 from typing import Tuple
-from typing import Union
 
-import ijson
-from cachier import cachier
-from torchvision.datasets import ImageFolder
-from tqdm import tqdm
+import duckdb
+import pytz
+from PIL import Image
 
-from mtgdata.util.inout import get_json
-from mtgdata.util.inout import smart_download
+from doorway import io_download
 from doorway.x import ProxyDownloader
-from doorway.x import scrape_proxies
+from mtgdata.util.inout import get_json
 
 
 logger = logging.getLogger(__name__)
@@ -72,150 +66,32 @@ def _data_dir(data_root: Optional[str], relative_path: Optional[str], env_key='D
         return data_root
     return os.path.join(data_root, relative_path)
 
-
 # ========================================================================= #
 # Scryfall API Helper                                                       #
 # ========================================================================= #
 
 
-class ScryfallAPI(object):
+ImageType = Literal['small', 'border_crop', 'normal', 'large', 'png', 'art_crop']
+BulkType = Literal['oracle_cards', 'unique_artwork', 'default_cards', 'all_cards', 'rulings']
 
-    IMG_TYPES = {
-        'small':       'jpg',
-        'border_crop': 'jpg',
-        'normal':      'jpg',
-        'large':       'jpg',
-        'png':         'png',
-        'art_crop':    'jpg',
-    }
+_IMG_TYPES: dict[ImageType, str] = {
+    'small':       'jpg',
+    'border_crop': 'jpg',
+    'normal':      'jpg',
+    'large':       'jpg',
+    'png':         'png',
+    'art_crop':    'jpg',
+}
 
-    IMG_SHAPES = {
-        # aspect ratio ~= 7:5 (H = 1.4 W)
-        'small':       (204,  146, 3),
-        'border_crop': (680,  480, 3),
-        'normal':      (680,  488, 3),
-        'large':       (936,  672, 3),
-        'png':         (1040, 745, 3),
-        'art_crop':    None,
-    }
-
-    @classmethod
-    def api_download(cls, endpoint):
-        logger.info(f'[Scryfall]: {endpoint}')
-        return get_json(os.path.join(f'https://api.scryfall.com', endpoint))['data']
-
-    @classmethod
-    def get_bulk_info(cls, data_root=None, force_update=False):
-
-        @cachier(stale_after=CACHE_STALE_AFTER, cache_dir=_data_dir(data_root=data_root, relative_path='cache/scryfall'))
-        def _get_bulk_info():
-            return {data['type']: data for data in cls.api_download('bulk-data')}
-
-        return _get_bulk_info(overwrite_cache=force_update)
-
-    @classmethod
-    def _get_bulk_path(cls, bulk_type='default_cards', data_root=None, force_update=False) -> str:
-        # query information
-        bulk_info = cls.get_bulk_info(data_root=data_root, force_update=force_update)
-        assert bulk_type in bulk_info, f"Invalid {bulk_type=}, must be one of: {list(bulk_info.keys())}"
-        # download bulk data if needed
-        download_uri = bulk_info[bulk_type]['download_uri']
-        bulk_path = smart_download(download_uri, folder=_data_dir(data_root, 'scryfall/bulk'), overwrite=force_update)
-        return bulk_path
-
-    @classmethod
-    def _bulk_path_to_bulk_date(cls, bulk_path: str):
-        # extract bulk file date: eg. `all-cards-20210605091428.json` or `default-cards-20210605090317.json`
-        assert bulk_path.endswith('.json')
-        bulk_name = os.path.basename(bulk_path)[:-len('.json')]
-        (*_, bulk_date) = bulk_name.split('-')
-        # make sure the bulk_date is an integer
-        assert len(bulk_date) == 14  # yyyymmddhhmmss
-        int(bulk_date)
-        # return the date
-        return bulk_date
-
-    @classmethod
-    def bulk_iter(cls, bulk_type='default_cards', data_root=None, force_update=False, return_bulk_info=False):
-        bulk_path = cls._get_bulk_path(bulk_type=bulk_type, data_root=data_root, force_update=force_update)
-        yield from cls._bulk_iter(bulk_type=bulk_type, bulk_path=bulk_path, return_bulk_info=return_bulk_info)
-
-    @classmethod
-    def _bulk_iter(cls, bulk_type: str, bulk_path: str, return_bulk_info=False):
-        assert bulk_type.replace('_', '-') in bulk_path
-        bulk_date = cls._bulk_path_to_bulk_date(bulk_path=bulk_path)
-        # open json efficiently - these files are large!!!
-        with open(bulk_path, 'rb') as f:
-            for bulk_idx, item in enumerate(ijson.items(f, 'item')):  # item is behavior keyword for ijson
-                if return_bulk_info:
-                    yield item, {'bulk_idx': bulk_idx, 'bulk_type': bulk_type, 'bulk_date': bulk_date}
-                else:
-                    yield item
-
-    @classmethod
-    def _make_face_item(cls, card, img_type: str, bulk_info: Dict[str, Union[str, int]], f_idx: int = None):
-        # handle the case where the card has a face or not
-        if f_idx is None:
-            face = card
-            file_name = f"{card['id']}.{cls.IMG_TYPES[img_type]}"
-        else:
-            face = card['card_faces'][f_idx]
-            file_name = f"{card['id']}_{f_idx}.{cls.IMG_TYPES[img_type]}"
-        # make the object
-        return SimpleNamespace(
-            id=card['id'],
-            oracle_id=card['oracle_id'],
-            name=face['name'],
-            set=card['set'],
-            set_name=card['set_name'],
-            face_idx=f_idx,
-            img_uri=face['image_uris'][img_type],
-            img_file=os.path.join(card['set'], file_name),
-            **bulk_info,
-        )
-
-    @classmethod
-    def card_face_info_iter(cls, img_type='border_crop', bulk_type='default_cards', force_update=False, data_root=None):
-        bulk_path = cls._get_bulk_path(bulk_type=bulk_type, data_root=data_root, force_update=force_update)
-        yield from cls._card_face_info_iter(img_type=img_type, bulk_type=bulk_type, bulk_path=bulk_path)
-
-    @classmethod
-    def _card_face_info_iter(cls, img_type: str, bulk_type: str, bulk_path: str):
-        # check image type
-        assert img_type in cls.IMG_TYPES, f'Invalid image type {img_type=}, must be one of: {list(cls.IMG_TYPES.keys())}'
-        # count number of skips
-        count, skips, errors = 0, 0, 0
-        # yield faces
-        for card, bulk_info in cls._bulk_iter(bulk_type=bulk_type, bulk_path=bulk_path, return_bulk_info=True):
-            try:
-                count += 1
-                # skip cards with placeholder or missing images
-                if card['image_status'] not in ('lowres', 'highres_scan'):
-                    if card['image_status'] not in ('placeholder', 'missing'):
-                        logger.error(f'[SKIPPED] unknown card `image_status`: {card["image_status"]}')
-                    skips += 1
-                    continue
-                # ANY CARD WITH (card_faces AND image_uris) WILL NOT HAVE (image_uris IN card_faces)
-                # ie. if image_uris does not exist, check card_faces for data.
-                # ALSO: any card without image_uris can be assumed not to have an illustration_id (not the other way around)
-                # ie. the card_faces must be checked for these.
-                if 'image_uris' not in card:
-                    if 'card_faces' not in card:
-                        logger.error(f'[SKIPPED] Scryfall error, card with no `image_uris` also has no `card_faces`: {card}')
-                        skips += 1
-                        continue
-                    for f_idx, _ in enumerate(card['card_faces']):
-                        yield cls._make_face_item(card, img_type=img_type, bulk_info=bulk_info, f_idx=f_idx)
-                else:
-                    yield cls._make_face_item(card, img_type=img_type, bulk_info=bulk_info, f_idx=None)
-            except Exception as e:
-                logger.error(f'failed to get card faces due to error: {repr(e)} for card: {card}')
-                skips += 1
-                errors += 1
-                continue
-        # done iterating over cards
-        if skips > 0:
-            logger.warning(f'[TOTAL SKIPS]: {skips} of {count} cards/faces, of which {errors} skips were errors!')
+_IMG_SHAPES: dict[ImageType, Tuple[int, int, int] | None] = {
+    # aspect ratio ~= 7:5 (H = 1.4 W)
+    'small':       (204,  146, 3),
+    'border_crop': (680,  480, 3),
+    'normal':      (680,  488, 3),
+    'large':       (936,  672, 3),
+    'png':         (1040, 745, 3),
+    'art_crop':    None,
+}
 
 
 # ========================================================================= #
@@ -223,148 +99,158 @@ class ScryfallAPI(object):
 # ========================================================================= #
 
 
-class ScryfallDataset(ImageFolder):
+class ScryfallCardFace(NamedTuple):
+    # query
+    id: str
+    oracle_id: str
+    name: str
+    set_code: str
+    set_name: str
+    img_uri: str
+    img_type: ImageType
+    bulk_type: BulkType
+    # computed
+    _sets_dir: Path
+    _proxy: ProxyDownloader | None = None
 
-    IMG_SHAPES = ScryfallAPI.IMG_SHAPES
-    IMG_TYPES = ScryfallAPI.IMG_TYPES
+    @property
+    def img_path(self) -> Path:
+        return self._sets_dir / f'{self.set_code}/{self.id}.{_IMG_TYPES[self.img_type]}'
 
-    def __init__(self, transform=None, img_type='border_crop', bulk_type='default_cards', resize_incorrect=True, data_root: Optional[str] = None, force_update=False, download_threads: int = 64, clean_invalid_images=False):
+    def download(self, verbose: bool = True) -> Path:
+        if self._proxy is None:
+            raise RuntimeError('proxy is not set!')
+        self._proxy.download(self.img_uri, str(self.img_path), exists_mode='skip', verbose=verbose, make_dirs=True, attempts=128, timeout=8)
+        return self.img_path
+
+    def open_image(self, verbose: bool = True) -> Image.Image:
+        return Image.open(self.download(verbose=verbose))
+
+
+class ScryfallCardFaceDataset:
+
+    def __init__(
+        self,
+        img_type: ImageType = 'normal',
+        bulk_type: BulkType = 'default_cards',
+        *,
+        root_dir: Path | None = None,
+    ):
         self._img_type = img_type
         self._bulk_type = bulk_type
-        self._bulk_date = None
-        self._data_root = data_root
-        # download missing files
-        self.data_dir, url_file_tuples = self._download_missing(data_root=data_root, img_type=img_type, bulk_type=bulk_type, force_update=force_update, download_threads=download_threads, clean_invalid_images=clean_invalid_images)
+        # get root dir
+        if root_dir is None:
+            root_dir = os.environ.get('DATA_ROOT', 'data')
+            root_dir = Path(root_dir) / 'scryfall' / bulk_type / img_type
+        # check dirs
+        root_dir.mkdir(parents=True, exist_ok=True)
+        if not root_dir.is_dir():
+            raise NotADirectoryError(f'path is not a directory: {root_dir}')
         # initialise dataset
-        super().__init__(self.data_dir, transform=None, target_transform=None, is_valid_file=None)
-        # override transform function
-        self.__transform = transform
-        self.__resize_incorrect = resize_incorrect
-        # check that all the files exist -- final assertion
-        if len(self.samples) < len(url_file_tuples):
-            raise FileNotFoundError('dataset is missing image files')
-        elif len(self.samples) > len(url_file_tuples):
-            raise FileExistsError('dataset is has additional invalid image files')
+        self._path_sets_dir = root_dir / 'sets'
+        self._path_ddb = root_dir / 'index.ddb'
+        self._path_bulk = root_dir / 'bulk.json'
+        self._key_bulk_info = f'bulk_info'
+        # initialize
+        self._download_bulk_data()
 
-    def __getitem__(self, idx):
-        img, label = super(ScryfallDataset, self).__getitem__(idx)
-        # make sure the item is the right size
-        if self.__resize_incorrect:
-            if img.size != self.img_size_pil:
-                img = img.resize(self.img_size_pil)
-        # transform if required
-        if self.__transform is not None:
-            img = self.__transform(img)
-        # done!
-        return img
+    # ~=~=~ DB ~=~=~
 
-    @property
-    def img_type(self) -> str:
-        return self._img_type
+    def _get_db_connection(self, conn: duckdb.DuckDBPyConnection | None = None) -> duckdb.DuckDBPyConnection:
+        if conn is not None:
+            return conn
+        # should cache
+        conn = duckdb.connect(self._path_ddb)
+        conn.execute("""CREATE TABLE IF NOT EXISTS cache (id STRING PRIMARY KEY NOT NULL, last_updated TIMESTAMPTZ NOT NULL, data JSON NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS card_last_updated (card_id STRING PRIMARY KEY NOT NULL, card_set_code STRING NOT NULL, last_updated TIMESTAMPTZ NOT NULL)""")
+        return conn
 
-    @property
-    def bulk_type(self) -> str:
-        return self._bulk_type
+    # -- cache -- #
 
-    @property
-    def img_shape(self) -> Tuple[int, int, int]:
-        return self.IMG_SHAPES[self._img_type]
+    def _db_get_cache_value(self, id: str, *, conn: duckdb.DuckDBPyConnection | None = None) -> Tuple[dict | None, timedelta]:
+        conn = self._get_db_connection(conn)
+        cursor = conn.execute(f"""SELECT data, last_updated FROM cache WHERE id = ?""", [id])
+        result = cursor.fetchone()
+        if result is not None:
+            return json.loads(result[0]), datetime.now(pytz.utc) - result[1]
+        return None, datetime.now() - datetime.min
 
-    @property
-    def img_size_pil(self) -> Tuple[int, int]:
-        return self.img_shape[1::-1]
+    def _db_put_cache_value(self, id: str, data: dict, *, conn: duckdb.DuckDBPyConnection | None = None):
+        conn = self._get_db_connection(conn)
+        cursor = conn.execute(f"""INSERT OR REPLACE INTO cache (id, last_updated, data) VALUES (?, now(), ?)""",[id, data])
+        return cursor
 
-    @property
-    def shape(self) -> Tuple[int, ...]:
-        return (len(self), *self.img_shape)
+    def _db_del_cache_value(self, id: str, *, conn: duckdb.DuckDBPyConnection | None = None):
+        conn = self._get_db_connection(conn)
+        cursor = conn.execute(f"""DELETE FROM cache WHERE id = ?""", [id])
+        return cursor
 
-    @property
-    def bulk_date(self) -> str:
-        if self._bulk_date is None:
-            bulk_path = ScryfallAPI._get_bulk_path(bulk_type=self.bulk_type, data_root=self._data_root, force_update=False)
-            self._bulk_date = ScryfallAPI._bulk_path_to_bulk_date(bulk_path)
-        return self._bulk_date
+    # ~=~=~ bulk data ~=~=~
 
     @classmethod
-    def _get_tuples(cls, img_type: str, bulk_type: str, data_root=None, force_update: bool = False) -> List[Tuple[str, str]]:
+    def _get_bulk_data_info(cls, bulk_type: BulkType):
+        bulk_data_list = get_json(f'https://api.scryfall.com/bulk-data')['data']
+        for item in bulk_data_list:
+            if item['type'] == bulk_type:
+                return item
+        raise ValueError(
+            f'bulk type {bulk_type} not found in bulk data list, valid types are: {[d["type"] for d in bulk_data_list]}'
+        )
 
-        @cachier(stale_after=CACHE_STALE_AFTER, cache_dir=_data_dir(data_root=data_root, relative_path='cache/scryfall'))
-        def __get_tuples(img_type: str, bulk_type: str):
-            # get all card information
-            url_file_tuples = []
-            for face in tqdm(ScryfallAPI.card_face_info_iter(img_type=img_type, bulk_type=bulk_type, force_update=force_update, data_root=data_root), desc='Loading Image Info'):
-                url_file_tuples.append((face.img_uri, face.img_file))
-            # get duplicated
-            uf_counts = {k: count for k, count in Counter(url_file_tuples).items() if (count > 1)}
-            f_counts  = {k: count for k, count in Counter(file for url, file in url_file_tuples).items() if (count > 1)}
-            u_counts  = {k: count for k, count in Counter(url for url, file in url_file_tuples).items() if (count > 1)}
-            # duplicates are errors!
-            if uf_counts: raise RuntimeError(f'duplicate files and urls found: {uf_counts}')
-            if f_counts: raise RuntimeError(f'duplicate files found: {f_counts}')
-            if u_counts: raise RuntimeError(f'duplicate urls found: {u_counts}')
-            # return all the files
-            return url_file_tuples
+    def _download_bulk_data(self, force_update: bool = False) -> Path:
+        bulk_data_info, last_updated = self._db_get_cache_value(self._key_bulk_info)
+        # stale / non-existent
+        if bulk_data_info is None or last_updated > CACHE_STALE_AFTER or force_update:
+            bulk_data_info = self._get_bulk_data_info(self._bulk_type)
+            # now download bulk data
+            self._db_del_cache_value(self._key_bulk_info)
+            self._path_bulk.unlink(missing_ok=True)
+            io_download(
+                src_url=bulk_data_info['download_uri'],
+                dst_path=str(self._path_bulk),
+                overwrite_existing=True,
+            )
+            self._db_put_cache_value(self._key_bulk_info, bulk_data_info)
+        # result
+        return self._path_bulk
 
-        return __get_tuples(img_type=img_type, bulk_type=bulk_type, overwrite_cache=force_update)
+    # ~=~=~ yield card faces ~=~=~
 
-    @classmethod
-    def _download_missing(cls, data_root: str, img_type: str, bulk_type: str, force_update: bool, download_threads: int = 64, download_attempts: int = 1024, download_timeout: int = 2, clean_invalid_images: bool = False) -> Tuple[str, List[Tuple[str, str]]]:
-        # get paths
-        data_dir = _data_dir(data_root=data_root, relative_path=os.path.join('scryfall', bulk_type, img_type))
-        proxy_dir = _data_dir(data_root=data_root, relative_path=os.path.join('cache/proxy'))
-        # get url_file tuple information
-        url_file_tuples = cls._get_tuples(img_type=img_type, bulk_type=bulk_type, force_update=force_update, data_root=data_root)  # TODO: wont properly recheck bulk, will only regenerate list of files
-        # get existing files without root, ie. "<set>/<uuid>.<ext>"
-        img_ext = cls.IMG_TYPES[img_type]
-        # strip data_dir directories from gobbed files
-        # `os.path.relpath(path, data_dir)` is more robust, but quite slow.
-        strip_len = len(data_dir.rstrip('/') + '/')
-        existing = set(path[strip_len:] for path in glob(os.path.join(data_dir, f'*/*.{img_ext}')))
-        # obtain list of files that do not yet exist
-        missing_url_file_tuples = [(u, os.path.join(data_dir, f)) for u, f in url_file_tuples if f not in existing]
-        # download missing images
-        if missing_url_file_tuples:
-            proxy = ProxyDownloader(proxies=scrape_proxies(cache_dir=proxy_dir), req_min_remove_count=3)
-            failed = proxy.download_threaded(missing_url_file_tuples, exists_mode='skip', verbose=False, make_dirs=True, ignore_failures=True, threads=download_threads, attempts=download_attempts, timeout=download_timeout)
-            if failed:
-                raise FileNotFoundError(f'Failed to download {len(failed)} card images')
-        # check for additional dataset images
-        required = set(f for u, f in url_file_tuples)
-        if len(existing - required) != 0 or len(required) != (len(existing) + len(missing_url_file_tuples)):
-            if clean_invalid_images:
-                for i, file_name in enumerate(sorted(existing - required)):
-                    os.unlink(os.path.join(data_dir, file_name))
-                    logger.warning(f'{i+1}: invalid file in dataset directory was deleted: {os.path.join(data_dir, file_name)}')
-            else:
-                for i, file_name in enumerate(sorted(existing - required)):
-                    logger.error(f'{i+1}: invalid file exists in dataset directory: {os.path.join(data_dir, file_name)}')
-                raise FileExistsError(f'additional images not in the dataset exist, specify: `clean_invalid_images=True` to delete these files.')
-        # check for empty directories left over
-        setnames = set(os.path.dirname(f) for u, f in url_file_tuples)
-        dirnames = set(f for f in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, f)))
-        if setnames - dirnames:
-            # we are missing sets
-            raise FileNotFoundError(f'Directories are missing in: {repr(data_dir)} for sets: {setnames - dirnames}')
-        elif dirnames - setnames:
-            # we have extra dirs -- delete the extra directories but make sure they are empty
-            if clean_invalid_images:
-                for i, setname in enumerate(dirnames - setnames):
-                    setdir = os.path.join(data_dir, setname)
-                    # check it is a dir
-                    if not os.path.isdir(setdir):
-                        raise NotADirectoryError(f'Cannot delete: {repr(setname)} in: {repr(data_dir)}, expected a directory!')
-                    # check for files contained
-                    contains_files = [f for f in os.listdir(setdir) if not f.startswith('.')]
-                    if os.listdir(setdir):
-                        raise FileExistsError(f'Cannot delete: {repr(setname)} in: {repr(data_dir)}, expected the directory to be empty, contains: {contains_files}')
-                    # cleanup!
-                    os.rmdir(setdir)
-                    logger.warning(f'{i+1}: invalid set directory in dataset directory was deleted: {setdir}')
-            else:
-                raise FileExistsError(f'Extra directories were found in: {repr(data_dir)} for sets: {dirnames - setnames}, these need to be deleted.')
-        # return
-        return data_dir, url_file_tuples
+    def yield_card_faces(self) -> Iterator['ScryfallCardFace']:
+        query = f"""
+            SELECT
+                t.id,
+                t.oracle_id,
+                t.name,
+                t.set AS set_code,
+                t.set_name,
+                img.image_uri,
+                '{self._img_type}' AS img_type,
+                '{self._bulk_type}' AS bulk_type
+            FROM read_json('{self._path_bulk}') t
+            CROSS JOIN LATERAL (
+              VALUES
+                (t.image_uris.{self._img_type}),
+                (t.card_faces[1].image_uris.{self._img_type}),
+                (t.card_faces[2].image_uris.{self._img_type})
+            ) AS img(image_uri)
+            WHERE img.image_uri IS NOT NULL;
+        """
+        cursor = duckdb.sql(query)
+        while True:
+            row = cursor.fetchone()
+            if row is None:
+                break
+            yield ScryfallCardFace(*row, _sets_dir=self._path_sets_dir)
 
+
+
+
+
+class ScryfallAPI:
+    pass
+class ScryfallDataset:
+    pass
 
 # ========================================================================= #
 # ENTRY POINT - HELPERS                                                     #
@@ -387,17 +273,25 @@ def _make_parser_scryfall_prepare(parser=None):
 
 
 def _run_scryfall_prepare(args):
-    # download the dataset
-    data = ScryfallDataset(
+    ds = ScryfallCardFaceDataset(
         bulk_type=args.bulk_type,
         img_type=args.img_type,
-        data_root=args.data_root,
         force_update=args.force_update,
-        download_threads=args.download_threads,
-        clean_invalid_images=args.clean_invalid_images,
     )
-    # information
-    logger.info(f'Finished downloading {len(data)} images for: {repr(data.bulk_type)} {repr(data.bulk_date)} {repr(data.img_type)}')
+    for i, item in enumerate(ds.yield_card_faces_and_download()):
+        print(item)
+
+    # # download the dataset
+    # data = ScryfallDataset(
+    #     bulk_type=args.bulk_type,
+    #     img_type=args.img_type,
+    #     data_root=args.data_root,
+    #     force_update=args.force_update,
+    #     download_threads=args.download_threads,
+    #     clean_invalid_images=args.clean_invalid_images,
+    # )
+    # # information
+    # logger.info(f'Finished downloading {len(data)} images for: {repr(data.bulk_type)} {repr(data.img_type)}')
 
 
 # ========================================================================= #

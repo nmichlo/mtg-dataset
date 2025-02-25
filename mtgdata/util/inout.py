@@ -38,26 +38,26 @@ logger = getLogger(__name__)
 
 
 # TODO: merge with proxy
-def smart_download(url, file=None, folder=None, overwrite=False):
-    # get names
-    if file is None:
-        file = os.path.basename(url).split('?')[0]
-    if folder is None:
-        folder, file = os.path.split(file)
-    assert not os.path.dirname(file), 'directory must be specified using folder.'
-    # check path
-    path = os.path.join(folder, file)
-    if os.path.exists(path) and not overwrite:
-        logger.debug(f'[SKIPPED] skipped existing: {path}')
-        return path
-    # mkdirs
-    if not os.path.exists(folder):
-        logger.debug(f'[MADE] made parent folder: {folder}')
-        os.makedirs(folder, exist_ok=True)
-    # download
-    io_download(url, str(path))
-    # return path to file
-    return path
+# def smart_download(url, file=None, folder=None, overwrite=False):
+#     # get names
+#     if file is None:
+#         file = os.path.basename(url).split('?')[0]
+#     if folder is None:
+#         folder, file = os.path.split(file)
+#     assert not os.path.dirname(file), 'directory must be specified using folder.'
+#     # check path
+#     path = os.path.join(folder, file)
+#     if os.path.exists(path) and not overwrite:
+#         logger.debug(f'[SKIPPED] skipped existing: {path}')
+#         return path
+#     # mkdirs
+#     if not os.path.exists(folder):
+#         logger.debug(f'[MADE] made parent folder: {folder}')
+#         os.makedirs(folder, exist_ok=True)
+#     # download
+#     io_download(url, str(path))
+#     # return path to file
+#     return path
 
 
 # TODO: merge with proxy
