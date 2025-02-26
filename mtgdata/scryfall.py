@@ -22,11 +22,19 @@
 #  SOFTWARE.
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 
+__all__ = [
+    "ScryfallDataset",
+    "ScryfallCardFace",
+    "ScryfallImageType",
+    "ScryfallBulkType",
+]
+
 import dataclasses
 import json
 import logging
 import os
 from datetime import datetime, timedelta
+from enum import Enum
 from pathlib import Path
 from typing import Any, Iterator, Literal, TYPE_CHECKING
 from typing import Tuple
@@ -58,27 +66,67 @@ CACHE_STALE_AFTER = timedelta(days=365)
 # ========================================================================= #
 
 
-ImageType = Literal['small', 'border_crop', 'normal', 'large', 'png', 'art_crop']
-BulkType = Literal['oracle_cards', 'unique_artwork', 'default_cards', 'all_cards', 'rulings']
+class ScryfallBulkType(str, Enum):
+    oracle_cards = 'oracle_cards'
+    unique_artwork = 'unique_artwork'
+    default_cards = 'default_cards'
+    all_cards = 'all_cards'
+    rulings = 'rulings'
 
-_IMG_TYPES: dict[ImageType, str] = {
-    'small':       'jpg',
-    'border_crop': 'jpg',
-    'normal':      'jpg',
-    'large':       'jpg',
-    'png':         'png',
-    'art_crop':    'jpg',
+
+class ScryfallImageType(str, Enum):
+    small = 'small'
+    border_crop = 'border_crop'
+    normal = 'normal'
+    large = 'large'
+    png = 'png'
+    art_crop = 'art_crop'
+
+    @property
+    def extension(self) -> Literal['jpg', 'png']:
+        return _IMG_TYPE_EXTENSIONS[self]
+
+    @property
+    def hwc(self) -> Tuple[int, int, int] | None:
+        h, w, c = _IMG_TYPE_SIZES_HWC[self]
+        return h, w, c
+
+    @property
+    def size(self) -> Tuple[int, int] | None:
+        h, w, c = _IMG_TYPE_SIZES_HWC[self]
+        return w, h  # PIL uses (W, H)
+
+    @property
+    def height(self) -> int:
+        h, w, c = _IMG_TYPE_SIZES_HWC[self]
+        return h
+
+    @property
+    def width(self) -> int:
+        h, w, c = _IMG_TYPE_SIZES_HWC[self]
+        return w
+
+
+_IMG_TYPE_EXTENSIONS: dict[ScryfallImageType, Literal['jpg', 'png']] = {
+    ScryfallImageType.small:       'jpg',
+    ScryfallImageType.border_crop: 'jpg',
+    ScryfallImageType.normal:      'jpg',
+    ScryfallImageType.large:       'jpg',
+    ScryfallImageType.png:         'png',
+    ScryfallImageType.art_crop:    'jpg',
 }
 
-_IMG_SHAPES: dict[ImageType, Tuple[int, int, int] | None] = {
+_IMG_TYPE_SIZES_HWC: dict[ScryfallImageType, Tuple[int, int, int] | None] = {
     # aspect ratio ~= 7:5 (H = 1.4 W)
-    'small':       (204,  146, 3),
-    'border_crop': (680,  480, 3),
-    'normal':      (680,  488, 3),
-    'large':       (936,  672, 3),
-    'png':         (1040, 745, 3),
-    'art_crop':    None,
+    ScryfallImageType.small:       (204,  146, 3),
+    ScryfallImageType.border_crop: (680,  480, 3),
+    ScryfallImageType.normal:      (680,  488, 3),
+    ScryfallImageType.large:       (936,  672, 3),
+    ScryfallImageType.png:         (1040, 745, 3),
+    ScryfallImageType.art_crop:    None,
 }
+
+_IMG_SHAPES = None
 
 
 # ========================================================================= #
@@ -95,23 +143,35 @@ class ScryfallCardFace:
     set_code: str
     set_name: str
     img_uri: str
-    img_type: ImageType
-    bulk_type: BulkType
+    _img_type: ScryfallImageType
+    _bulk_type: ScryfallBulkType
     # computed
     _sets_dir: Path
     _proxy: ProxyDownloader | None = None
 
     @property
-    def img_path(self) -> Path:
-        return self._sets_dir / f'{self.set_code}/{self.id}.{_IMG_TYPES[self.img_type]}'
+    def img_type(self) -> ScryfallImageType:
+        return ScryfallImageType(self._img_type)
 
-    def download(self, verbose: bool = True) -> Path:
+    @property
+    def bulk_type(self) -> ScryfallBulkType:
+        return ScryfallBulkType(self._bulk_type)
+
+    @property
+    def img_path(self) -> Path:
+        return self._sets_dir / f'{self.set_code}/{self.id}.{self.img_type.extension}'
+
+    @property
+    def url_path_pair(self) -> Tuple[str, str]:
+        return self.img_uri, str(self.img_path)
+
+    def download(self, *, verbose: bool = True) -> Path:
         if self._proxy is None:
             raise RuntimeError('proxy is not set!')
         self._proxy.download(self.img_uri, str(self.img_path), exists_mode='skip', verbose=verbose, make_dirs=True, attempts=128, timeout=8)
         return self.img_path
 
-    def open_image(self, verbose: bool = True) -> "Image.Image":
+    def dl_and_open_im(self, *, verbose: bool = True) -> "Image.Image":
         try:
             from PIL import Image
         except ImportError:
@@ -119,9 +179,22 @@ class ScryfallCardFace:
 
         return Image.open(self.download(verbose=verbose))
 
-    @property
-    def url_path_pair(self) -> Tuple[str, str]:
-        return self.img_uri, str(self.img_path)
+    def dl_and_open_im_resized(
+        self,
+        mode: Literal["resize", "error"] = "resize",
+        *,
+        verbose: bool = True,
+    ) -> "Image.Image":
+        img = self.dl_and_open_im(verbose=verbose)
+        if self.img_type.size != img.size:
+            if mode == 'resize':
+                logger.warning(f'image shape mismatch: {img.size} != {self.img_type.size}')
+                img = img.resize(self.img_type.size)
+            elif mode == 'error':
+                raise RuntimeError(f'image shape mismatch: {img.size} != {self.img_type.size}')
+            else:
+                raise KeyError(f'invalid mode: {mode}')
+        return img
 
 
 @dataclasses.dataclass()
@@ -137,7 +210,7 @@ class _DatasetIndex:
         return self.time_since_last_updated > CACHE_STALE_AFTER
 
     @classmethod
-    def _query_bulk_data(cls, bulk_type: BulkType) -> dict[str, Any]:
+    def _query_bulk_data(cls, bulk_type: ScryfallBulkType) -> dict[str, Any]:
         response = requests.get(f'https://api.scryfall.com/bulk-data')
         response.raise_for_status()
         data = response.json()
@@ -150,7 +223,7 @@ class _DatasetIndex:
         )
 
     @classmethod
-    def from_query(cls, bulk_type: BulkType) -> '_DatasetIndex':
+    def from_query(cls, bulk_type: ScryfallBulkType) -> '_DatasetIndex':
         return cls(
             bulk_data=cls._query_bulk_data(bulk_type),
             last_updated=datetime.now(pytz.utc),
@@ -175,13 +248,13 @@ class ScryfallDataset:
 
     def __init__(
         self,
-        img_type: ImageType = 'normal',
-        bulk_type: BulkType = 'default_cards',
+        img_type: ScryfallImageType = ScryfallImageType.normal,
+        bulk_type: ScryfallBulkType = ScryfallBulkType.default_cards,
         *,
         ds_dir: Path | None = None,
     ):
-        self._img_type = img_type
-        self._bulk_type = bulk_type
+        self._img_type = ScryfallImageType(img_type)
+        self._bulk_type = ScryfallBulkType(bulk_type)
         # get root dir
         if ds_dir is None:
             data_root = os.environ.get('DATA_ROOT', 'data')
@@ -196,11 +269,15 @@ class ScryfallDataset:
         self.__path_bulk = ds_dir / 'bulk.json'
 
     @property
-    def img_type(self) -> ImageType:
+    def data_root(self) -> Path:
+        return self.__ds_dir
+
+    @property
+    def img_type(self) -> ScryfallImageType:
         return self._img_type
 
     @property
-    def bulk_type(self) -> BulkType:
+    def bulk_type(self) -> ScryfallBulkType:
         return self._bulk_type
 
     @property
@@ -211,9 +288,36 @@ class ScryfallDataset:
     def _path_sets_dir(self) -> Path:
         return self.__ds_dir / 'sets'
 
+    @property
+    def bulk_datetime(self) -> datetime:
+        index, _ = self._download_bulk_data()
+        date = index.bulk_data['updated_at']
+        return datetime.fromisoformat(date)
+
+    @property
+    def bulk_date(self) -> str:
+        return self.bulk_datetime.strftime('%Y%m%d%H%M%S')  # same as in bulk filename
+
+    # ~=~=~ prepare ~=~=~
+
+    def prepare(
+        self,
+        *,
+        force_update: bool = False,
+        download_threads: int = 64,
+    ) -> "ScryfallDataset":
+        if force_update:
+            self.invalidate_cache()
+        self.download_all(
+            proxy=None,
+            threads=download_threads,
+            verbose=True,
+        )
+        return self
+
     # ~=~=~ DB ~=~=~
 
-    def _read_index(self) -> _DatasetIndex | None:
+    def __read_index(self) -> _DatasetIndex | None:
         if self.__path_index.exists():
             with AtomicOpen(self.__path_index, 'r') as fp:
                 dat = json.load(fp)
@@ -224,7 +328,7 @@ class ScryfallDataset:
         else:
             return None
 
-    def _update_index(self, index: _DatasetIndex):
+    def __update_index(self, index: _DatasetIndex) -> None:
         with AtomicOpen(self.__path_index, 'w') as fp:
             dat = {
                 'bulk_data': index.bulk_data,
@@ -234,7 +338,7 @@ class ScryfallDataset:
 
     # ~=~=~ bulk data ~=~=~
 
-    def invalidate_cache(self):
+    def invalidate_cache(self) -> "ScryfallDataset":
         # call this to force a cache update
         self.__path_index.unlink(missing_ok=True)
         self.__path_bulk.unlink(missing_ok=True)
@@ -242,8 +346,8 @@ class ScryfallDataset:
 
     # ~=~=~ bulk data ~=~=~
 
-    def _download_bulk_data(self) -> Path:
-        index = self._read_index()
+    def _download_bulk_data(self) -> Tuple[_DatasetIndex, Path]:
+        index = self.__read_index()
         # stale / non-existent
         if index is None or index.is_stale():
             new_index = _DatasetIndex.from_query(self._bulk_type)
@@ -254,10 +358,11 @@ class ScryfallDataset:
                     dst_path=str(self.__path_bulk),
                     overwrite_existing=True,
                 )
-            self._update_index(new_index)
+            self.__update_index(new_index)
         # done
+        assert index
         assert self.__path_bulk.exists()
-        return self.__path_bulk
+        return index, self.__path_bulk
 
     # ~=~=~ yield card faces ~=~=~
 
@@ -266,7 +371,9 @@ class ScryfallDataset:
 
     def yield_all(self, shared_proxy: ProxyDownloader | None = None) -> Iterator['ScryfallCardFace']:
         # fetch the bulk data
-        path_bulk = self._download_bulk_data()
+        _, path_bulk = self._download_bulk_data()
+        img_type = self._img_type.value
+        bulk_type = self._bulk_type.value
         query = f"""
             SELECT
                 t.id,
@@ -275,14 +382,14 @@ class ScryfallDataset:
                 t.set AS set_code,
                 t.set_name,
                 img.image_uri,
-                '{self._img_type}' AS img_type,
-                '{self._bulk_type}' AS bulk_type
+                '{img_type}' AS img_type,
+                '{bulk_type}' AS bulk_type
             FROM read_json('{path_bulk}') t
             CROSS JOIN LATERAL (
               VALUES
-                (t.image_uris.{self._img_type}),
-                (t.card_faces[1].image_uris.{self._img_type}),
-                (t.card_faces[2].image_uris.{self._img_type})
+                (t.image_uris.{img_type}),
+                (t.card_faces[1].image_uris.{img_type}),
+                (t.card_faces[2].image_uris.{img_type})
             ) AS img(image_uri)
             WHERE img.image_uri IS NOT NULL;
         """
@@ -298,19 +405,18 @@ class ScryfallDataset:
         proxy: ProxyDownloader | None = None,
         threads: int = max(os.cpu_count() * 2, 8),
         verbose: bool = True,
-    ) -> int:
-        total_cards = 0
+    ) -> list['ScryfallCardFace']:
+        cards_list = []
 
         def _itr():
-            nonlocal total_cards
             for item in self.yield_all(shared_proxy=proxy):
                 yield item.url_path_pair
-                total_cards += 1
+                cards_list.append(item)
 
         if not proxy:
             proxy = ProxyDownloader()
 
-        proxy.download_threaded(
+        failed = proxy.download_threaded(
             _itr(),
             exists_mode='skip',
             verbose=verbose,
@@ -319,7 +425,8 @@ class ScryfallDataset:
             attempts=128,
             timeout=8,
         )
-        return total_cards
+        assert not failed, f'failed to download: {failed}'
+        return cards_list
 
 
 # ========================================================================= #
@@ -352,8 +459,8 @@ def _run_scryfall_prepare(args):
         ds.invalidate_cache()
 
     logger.info(f'Downloading images for: {repr(args.bulk_type)} {repr(args.img_type)}')
-    total_cards = ds.download_all(threads=args.download_threads, verbose=True)
-    logger.info(f'Finished downloading {total_cards} images for: {repr(args.bulk_type)} {repr(args.img_type)}')
+    all_cards = ds.download_all(threads=args.download_threads, verbose=True)
+    logger.info(f'Finished downloading {len(all_cards)} images for: {repr(args.bulk_type)} {repr(args.img_type)}')
 
 
 # ========================================================================= #

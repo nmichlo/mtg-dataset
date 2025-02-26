@@ -22,18 +22,19 @@
 #  SOFTWARE.
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 
-import json
+import concurrent.futures
 import os
 import warnings
 import logging
-from typing import Optional
+from pathlib import Path
+from typing import Callable, Iterable, Optional, Sequence, TypeVar
 from typing import Tuple
 
 import h5py
 import numpy as np
 from tqdm import tqdm
 
-from mtgdata.scryfall import ScryfallDataset
+from mtgdata.scryfall import ScryfallBulkType, ScryfallImageType, ScryfallDataset, ScryfallCardFace
 from mtgdata.util import Hdf5Dataset
 
 
@@ -46,8 +47,15 @@ logger = logging.getLogger(__name__)
 
 
 class PilResizeNumpyTransform(object):
-    def __init__(self, resize=None, assert_shape=None, assert_dtype=None, transpose=True, pad_to_square=False):
-        self._resize = resize  # H, W
+    def __init__(
+        self,
+        resize: Tuple[int, int] = None,
+        assert_shape: Tuple[int, int, int] | None = None,
+        assert_dtype: np.dtype | None = None,
+        transpose: bool = True,
+        pad_to_square: bool = False,
+    ):
+        self._resize = resize  # W, H
         self._assert_shape = assert_shape  # H, W, C
         self._assert_dtype = assert_dtype
         self._transpose = transpose
@@ -56,7 +64,7 @@ class PilResizeNumpyTransform(object):
     def __call__(self, img):
         # resize
         if self._resize is not None:
-            img = img.resize(self._resize[::-1])
+            img = img.resize(self._resize)
         # convert to numpy
         img = np.array(img)
         # check RGB
@@ -84,48 +92,59 @@ class PilResizeNumpyTransform(object):
 
 
 # ========================================================================= #
+# dataloader                                                                #
+# ========================================================================= #
+
+
+def dataloader(
+    items: Sequence["T"],
+    *,
+    transform: Callable[["T"], np.ndarray],
+    batch_size: int = 64,
+    num_workers: int = os.cpu_count(),
+    include_last: bool = False,
+) -> Iterable[np.ndarray]:
+    """
+    Create a dataloader for the given items.
+    entries are mapped in order across multiple workers
+    """
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as pool:
+        stack = []
+        for i in pool.map(transform, items):
+            stack.append(i)
+            if len(stack) == batch_size:
+                yield np.stack(stack)
+                stack = []
+        if include_last and len(stack) > 0:
+            yield np.stack(stack)
+
+
+# ========================================================================= #
 # RESAVE                                                                    #
 # ========================================================================= #
 
 
-def _make_conv_dataset(bulk_type: str, img_type: str, resize=None, transpose=True, pad_to_square=False, data_root=None, force_update=False, download_threads=64, clean_invalid_images=False):
-    data = ScryfallDataset(
-        data_root=data_root,
-        transform=PilResizeNumpyTransform(
-            resize=resize,
-            assert_dtype='uint8',
-            assert_shape=ScryfallDataset.IMG_SHAPES[img_type] if (resize is None) else (*resize, 3),
-            transpose=transpose,
-            pad_to_square=pad_to_square,
-        ),
-        resize_incorrect=(resize is None),
-        bulk_type=bulk_type,
-        img_type=img_type,
-        force_update=force_update,
-        download_threads=download_threads,
-        clean_invalid_images=clean_invalid_images,
-    )
-    return data
+T = TypeVar('T')
 
 
 def dataset_save_as_hdf5(
-    data: ScryfallDataset,
-    save_path: str,
-    batch_size=64,
-    num_workers=os.cpu_count(),
-    img_shape=None,
-    overwrite=False,
-    compression_lvl=4,
+    items: Sequence[T],
+    *,
+    transform: Callable[[T], np.ndarray],  # output shape must match `obs_shape`
+    obs_shape: Tuple[int, int, int],  # (H, W, C) usually
+    save_path: Path | str,
+    batch_size: int = 64,
+    num_workers: int = os.cpu_count(),
+    overwrite: bool = False,
+    compression_lvl: int = 4,
 ):
     """
     Re-save the given Scryfall dataset as an HDF5 file.
     - the hdf5 file will have the key `data`
     """
-    from torch.utils.data import DataLoader
+    save_path = Path(save_path)
     # defaults & checks
-    if img_shape is None:
-        img_shape = data.img_shape
-    if not save_path.endswith('.h5'):
+    if not save_path.name.endswith('.h5'):
         raise ValueError('save_path must end with the ".h5" extension')
     # skip if exists
     if not overwrite:
@@ -137,9 +156,9 @@ def dataset_save_as_hdf5(
         # create new dataset
         d = f.create_dataset(
             name='data',
-            shape=(len(data), *img_shape),
+            shape=(len(items), *obs_shape),
             dtype='uint8',
-            chunks=(1, *img_shape),
+            chunks=(1, *obs_shape),
             compression='gzip',
             compression_opts=compression_lvl,
             # non-deterministic time stamps are added to the file if this is not
@@ -148,41 +167,40 @@ def dataset_save_as_hdf5(
             track_times=False,
         )
         # dataloader
-        dataloader = DataLoader(data, batch_size=batch_size, num_workers=num_workers, shuffle=False, drop_last=False)
+        loader = dataloader(items, transform=transform, batch_size=batch_size, num_workers=num_workers)
         # save data -- TODO: this is not atomic! if conversion fails the file is leftover!
         logger.info(f'Starting dataset conversion: {repr(save_path)}')
-        with tqdm(desc=f'Converting:', total=len(data), dynamic_ncols=True) as p:
-            for i, batch in enumerate(dataloader):
+        with tqdm(desc=f'Converting:', dynamic_ncols=True) as p:
+            for i, batch in enumerate(loader):
                 d[i*batch_size:(i+1)*batch_size] = batch
                 p.update(len(batch))
         logger.info(f'Finished dataset conversion: {repr(save_path)}')
-        # done
 
-
-def dataset_save_meta(
-    data: ScryfallDataset,
-    save_path: str,
-    data_root: Optional[str] = None,
-    overwrite: bool = False,
-):
-    if not save_path.endswith('.json'):
-        raise ValueError('save_path must end with the ".json" extension')
-    # check exists
-    if not overwrite:
-        if os.path.exists(save_path):
-            logger.warning(f'cards list already exists, overwriting not enabled, skipping: {repr(save_path)}')
-            return
-    # collect card information
-    card_info = tqdm(ScryfallAPI.card_face_info_iter(img_type=data.img_type, bulk_type=data.bulk_type, data_root=data_root), desc='Loading Cards List')
-    card_info = [{'idx': i, **info.__dict__} for i, info in enumerate(sorted(card_info, key=lambda x: x.img_file))]
-    # check that card_info corresponds to the dataset
-    # and that everything is sorted correctly!
-    assert len(card_info) == len(data)
-    assert [info['img_file'] for info in card_info] == [os.path.join(os.path.basename(os.path.dirname(sample[0])), os.path.basename(sample[0])) for sample in data.samples]
-    # save!
-    with open(save_path, 'w') as f:
-        json.dump(card_info, f, sort_keys=False)
-    logger.info(f'saved dataset meta: {repr(save_path)}')
+# LEGACY, TODO: rather just use duckdb over the JSON bulk json file, and export reduced data
+# def dataset_save_meta(
+#     data: ScryfallDataset,
+#     save_path: str,
+#     data_root: Optional[str] = None,
+#     overwrite: bool = False,
+# ):
+#     if not save_path.endswith('.json'):
+#         raise ValueError('save_path must end with the ".json" extension')
+#     # check exists
+#     if not overwrite:
+#         if os.path.exists(save_path):
+#             logger.warning(f'cards list already exists, overwriting not enabled, skipping: {repr(save_path)}')
+#             return
+#     # collect card information
+#     card_info = tqdm(ScryfallAPI.card_face_info_iter(img_type=data.img_type, bulk_type=data.bulk_type, data_root=data_root), desc='Loading Cards List')
+#     card_info = [{'idx': i, **info.__dict__} for i, info in enumerate(sorted(card_info, key=lambda x: x.img_file))]
+#     # check that card_info corresponds to the dataset
+#     # and that everything is sorted correctly!
+#     assert len(card_info) == len(data)
+#     assert [info['img_file'] for info in card_info] == [os.path.join(os.path.basename(os.path.dirname(sample[0])), os.path.basename(sample[0])) for sample in data.samples]
+#     # save!
+#     with open(save_path, 'w') as f:
+#         json.dump(card_info, f, sort_keys=False)
+#     logger.info(f'saved dataset meta: {repr(save_path)}')
 
 
 # ========================================================================= #
@@ -228,69 +246,75 @@ SANE_MODES = {
 # default_normal - out: 1769.92it/s ~5.2GB
 
 
+class CardTransform:
+    def __init__(self, transform: PilResizeNumpyTransform):
+        self.transform = transform
+
+    def __call__(self, card: ScryfallCardFace) -> np.ndarray:
+        img = card.dl_and_open_im()
+        return self.transform(img)
+
+
 def generate_converted_dataset(
     # output settings
-    out_img_type: str = 'border_crop',
-    out_bulk_type: str = 'default_cards',
+    out_img_type: ScryfallImageType = ScryfallImageType.border_crop,
+    out_bulk_type: ScryfallBulkType = ScryfallBulkType.default_cards,
     out_obs_compression_lvl: int = 9,
-    out_obs_size: Optional[Tuple[int, int]] = None,  # if None, then the dataset is not resized
+    out_obs_size_wh: Optional[Tuple[int | None, int | None]] = None,  # (W, H) -- None is auto computed based on default size.
     out_obs_channels_first: bool = False,
     out_obs_pad_to_square: bool = False,
     # save options
     save_root: Optional[str] = None,
     save_overwrite: bool = False,
     # image download settings
-    data_root: Optional[str] = None,
     imgs_force_update: bool = False,
     imgs_download_threads: int = os.cpu_count() * 2,
-    imgs_clean_invalid: bool = False,
     # conversion settings
     convert_batch_size: int = 128,
     convert_num_workers: int = os.cpu_count(),
     convert_speed_test: bool = False,
 ) -> Tuple[str, str]:
 
+    # download the dataset
+    dataset = ScryfallDataset(img_type=out_img_type, bulk_type=out_bulk_type)
+    if imgs_force_update:
+        dataset.invalidate_cache()
+
+    # get save root
+    if save_root is None:
+        save_root = dataset.data_root / 'converted'
+
     # get the final output image size
-    if out_obs_size is None:
-        final_size = ScryfallDataset.IMG_SHAPES[out_img_type][:2]
+    if out_obs_size_wh is None:
+        final_size_wh = dataset.img_type.size
     else:
-        default_h, default_w = ScryfallDataset.IMG_SHAPES[out_img_type][:2]
-        out_h, out_w = out_obs_size
-        if (out_h is None) and (out_w is None): out_h, out_w = default_h, default_w
-        elif (out_h is None): out_h = max(round(out_w * (default_h / default_w)), 1)
-        elif (out_w is None): out_w = max(round(out_h * (default_w / default_h)), 1)
-        final_size = (out_h, out_w)
+        default_w, default_h = dataset.img_type.size
+        out_w, out_h = out_obs_size_wh
+        if out_h is None and out_w is None:
+            out_h, out_w = default_h, default_w
+        elif out_h is None:
+            out_h = max(round(out_w * (default_h / default_w)), 1)
+        elif out_w is None:
+            out_w = max(round(out_h * (default_w / default_h)), 1)
+        final_size_wh = (out_w, out_h)
 
     # log the information
-    height, width = final_size
-    logger.info(f'final output image size of: {repr(final_size)} based on out_obs_size={repr(out_obs_size)}')
-
-    # download the dataset
-    data = _make_conv_dataset(
-        bulk_type=out_bulk_type,
-        img_type=out_img_type,
-        data_root=data_root,
-        force_update=imgs_force_update,
-        download_threads=imgs_download_threads,
-        resize=final_size,
-        transpose=out_obs_channels_first,
-        pad_to_square=out_obs_pad_to_square,
-        clean_invalid_images=imgs_clean_invalid,
-    )
+    width, height = final_size_wh
+    logger.info(f'final output image size of: {repr(final_size_wh)} based on out_obs_size={repr(out_obs_size_wh)}')
 
     # check args
     if height / width != 1.4:
         warnings.warn(f'Aspect ratio of height/width is not 1.4, given: {height}x{width} which gives {height / width}')
     if (out_bulk_type, out_img_type) not in SANE_MODES:
         warnings.warn(f'Current combination of bulk and image types might generate a lot of data: {(out_bulk_type, out_img_type)} consider instead one of: {sorted(SANE_MODES)}')
-    if (height > data.img_shape[0]) or (width > data.img_shape[1]):
-        warnings.warn(f'images are being unscaled from input size of: {data.img_shape[:2]} to: {(height, width)}')
+    if (height > dataset.img_type.height) or (width > dataset.img_type.width):
+        warnings.warn(f'images are being unscaled from input size of: {dataset.img_type.size} to: {(width, height)}')
 
-    if data.samples != sorted(data.samples, key=lambda x: x[0]):
-        raise RuntimeError('dataset did not load samples in alphabetical order, this is a bug.')
+    # download the images
+    cards = dataset.download_all(threads=imgs_download_threads)
 
     # get the shape of the images in the dataset (without padding)
-    data_shape = (len(data), 3, height, width) if out_obs_channels_first else (len(data), height, width, 3)
+    data_shape = (len(cards), 3, height, width) if out_obs_channels_first else (len(cards), height, width, 3)
     data_shape_str = 'x'.join(str(d) for d in data_shape)
 
     # get the output observation shape (with padding)
@@ -303,9 +327,9 @@ def generate_converted_dataset(
 
     # get paths & make sure parent folder exists
     bt, it = out_bulk_type.replace('_', '-'), out_img_type.replace('_', '-')
-    path_data = _data_dir(save_root, f'mtg_{bt}-{data.bulk_date}_{it}_{data_shape_str}_c{out_obs_compression_lvl}.h5')
-    path_meta = _data_dir(save_root, f'mtg_{bt}-{data.bulk_date}_{it}_{data_shape_str}_c{out_obs_compression_lvl}_meta.json')
-    os.makedirs(_data_dir(save_root, None), exist_ok=True)
+    path_data = save_root / f'mtg_{bt}-{dataset.bulk_date}_{it}_{data_shape_str}_c{out_obs_compression_lvl}.h5'
+    path_meta = save_root / f'mtg_{bt}-{dataset.bulk_date}_{it}_{data_shape_str}_c{out_obs_compression_lvl}_meta.json'
+    save_root.mkdir(parents=True, exist_ok=True)
 
     # check paths
     if not save_overwrite:
@@ -313,20 +337,37 @@ def generate_converted_dataset(
             logger.warning(f'converted dataset or meta files already exist: {repr(path_data)} or {repr(path_meta)}')
             return path_data, path_meta
 
+    # make transform
+    transform = CardTransform(
+        transform=PilResizeNumpyTransform(
+            resize=final_size_wh,
+            assert_dtype='uint8',
+            assert_shape=(*final_size_wh[::-1], 3),
+            transpose=out_obs_channels_first,
+            pad_to_square=out_obs_pad_to_square,
+        )
+    )
+
     # convert the dataset
     dataset_save_as_hdf5(
-        data, save_path=path_data, overwrite=save_overwrite,
-        img_shape=obs_shape, compression_lvl=out_obs_compression_lvl,
-        batch_size=convert_batch_size, num_workers=convert_num_workers,
+        cards,
+        transform=transform,
+        save_path=path_data,
+        overwrite=save_overwrite,
+        obs_shape=obs_shape,
+        compression_lvl=out_obs_compression_lvl,
+        batch_size=convert_batch_size,
+        num_workers=convert_num_workers,
     )
 
     # save dataset meta
-    dataset_save_meta(data, save_path=path_meta, overwrite=save_overwrite)
+    warnings.warn('saving dataset meta is not currently supported')
+    # TODO: dataset_save_meta(dataset, save_path=path_meta, overwrite=save_overwrite)
 
     # test the datasets
     if convert_speed_test:
         hdat = Hdf5Dataset(path_data, 'data')
-        _speed_test('raw images speed test', data)
+        # _speed_test('raw images speed test', dataset)  # No longer valid
         _speed_test('converted hdf5 speed test', hdat)
 
     # done!
@@ -378,17 +419,17 @@ def _run_scryfall_convert(args):
         out_img_type=args.img_type,
         out_bulk_type=args.bulk_type,
         out_obs_compression_lvl=args.compression_lvl,
-        out_obs_size=obs_size,
+        # out_obs_size=obs_size,
         out_obs_channels_first=args.channels_first,
         out_obs_pad_to_square=args.pad_to_square,
         # save options
         save_root=args.out_root,
         save_overwrite=args.overwrite,
         # image download settings
-        data_root=args.data_root,
+        # data_root=args.data_root,
         imgs_force_update=args.force_update,
         imgs_download_threads=args.download_threads,
-        imgs_clean_invalid=args.clean_invalid_images,
+        # imgs_clean_invalid=args.clean_invalid_images,
         # conversion settings
         convert_batch_size=args.batch_size,
         convert_num_workers=args.num_workers,
