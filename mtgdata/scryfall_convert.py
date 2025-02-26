@@ -158,7 +158,12 @@ def dataset_save_as_hdf5(
             track_times=False,
         )
         # dataloader
-        loader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, drop_last=False)
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            drop_last=False,
+        )
         # save data -- TODO: this is not atomic! if conversion fails the file is leftover!
         logger.info(f'Starting dataset conversion: {repr(save_path)}')
         with tqdm(desc=f'Converting:', total=len(dataset), dynamic_ncols=True) as p:
@@ -250,7 +255,7 @@ def generate_converted_dataset(
     # output settings
     out_img_type: ScryfallImageType = ScryfallImageType.border_crop,
     out_bulk_type: ScryfallBulkType = ScryfallBulkType.default_cards,
-    out_obs_compression_lvl: int = 1,
+    out_obs_compression_lvl: int = 4,
     out_obs_size_wh: Optional[Tuple[int | None, int | None]] = None,  # (W, H) -- None is auto computed based on default size.
     out_obs_channels_first: bool = False,
     out_obs_pad_to_square: bool = False,
@@ -386,7 +391,7 @@ def _make_parser_scryfall_convert(parser=None):
     parser.add_argument('--batch-size', type=int, default=128,              help="number of images to load in every batch when processing the dataset")
     parser.add_argument('--skip-speed-test', action='store_true',           help="if specified, disabled testing the before and after dataset speeds")
     parser.add_argument('--suffix', type=str, default='',                   help="string to add to the end of the file name")
-    parser.add_argument('--no-overwrite', action='store_true',                 help="overwrite existing generated dataset files")
+    parser.add_argument('--no-overwrite', action='store_true',              help="overwrite existing generated dataset files")
     parser.add_argument('--compression-lvl', type=int, default=4,           help="the compression level of the h5py file (0 to 9)")
     # return the parser
     return parser

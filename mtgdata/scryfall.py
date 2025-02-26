@@ -368,6 +368,7 @@ class ScryfallDataset:
                     overwrite_existing=True,
                 )
             self.__update_index(new_index)
+            index = new_index
         # done
         assert index
         assert self.__path_bulk.exists()
@@ -449,8 +450,8 @@ def _make_parser_scryfall_prepare(parser=None):
         import argparse
         parser = argparse.ArgumentParser()
     # these should match scryfall_convert.py
-    parser.add_argument('-b', '--bulk_type', type=str, default='default_cards',                     help="[default_cards|all_cards|oracle_cards|unique_artwork]. For more information, see: https://scryfall.com/docs/api/bulk-data")
-    parser.add_argument('-i', '--img-type', type=str, default='normal',                             help="[png|border_crop|art_crop|large|normal|small]. For more information, see: https://scryfall.com/docs/api/images")
+    parser.add_argument('-b', '--bulk_type', type=ScryfallBulkType, default=ScryfallBulkType.default_cards,  help="[default_cards|all_cards|oracle_cards|unique_artwork]. For more information, see: https://scryfall.com/docs/api/bulk-data")
+    parser.add_argument('-i', '--img-type', type=ScryfallImageType, default=ScryfallImageType.small,         help="[png|border_crop|art_crop|large|normal|small]. For more information, see: https://scryfall.com/docs/api/images")
     parser.add_argument('-d', '--data-root', type=str, default=None,                                help="download and cache directory location")
     parser.add_argument('-f', '--force-update', action='store_true',                                help="overwrite existing files and ignore caches")
     parser.add_argument('-t', '--download_threads', type=int, default=max(os.cpu_count() * 2, 128), help="number of threads to use when downloading files")
