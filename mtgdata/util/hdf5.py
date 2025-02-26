@@ -21,10 +21,13 @@
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
-import warnings
 
-import h5py
-from torch.utils.data import Dataset as Dataset
+__all__ = [
+    'Hdf5Dataset',
+    'NumpyDataset',
+]
+
+import warnings
 
 
 # ========================================================================= #
@@ -33,7 +36,7 @@ from torch.utils.data import Dataset as Dataset
 # ========================================================================= #
 
 
-class NumpyDataset(Dataset):
+class NumpyDataset:
 
     def __init__(self, data, transform=None):
         self._data = data
@@ -56,7 +59,7 @@ class NumpyDataset(Dataset):
         return self._data.shape
 
 
-class Hdf5Dataset(Dataset):
+class Hdf5Dataset:
     """
     This class supports pickling and unpickling of a read-only
     SWMR h5py file and corresponding dataset.
@@ -71,6 +74,10 @@ class Hdf5Dataset(Dataset):
         self._transform = transform
 
     def _make_hdf5(self):
+        try:
+            import h5py
+        except ImportError:
+            raise ImportError('h5py is not installed. Please install it via `pip install h5py`')
         # TODO: can this cause a memory leak if it is never closed?
         hdf5_file = h5py.File(self._h5_path, 'r', swmr=True)
         hdf5_data = hdf5_file[self._h5_dataset_name]

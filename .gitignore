@@ -6,6 +6,9 @@ __pycache__/
 # C extensions
 *.so
 
+# DS_Store
+.DS_Store
+
 # Distribution / packaging
 .Python
 build/
@@ -133,3 +136,5 @@ OLD/
 data/
 .idea/
 /lightning_logs/
+*.zip
+*.db
