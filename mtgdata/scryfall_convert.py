@@ -94,34 +94,6 @@ class PilResizeNumpyTransform(object):
 
 
 # ========================================================================= #
-# dataloader                                                                #
-# ========================================================================= #
-
-
-def dataloader(
-    items: Sequence["T"],
-    *,
-    transform: Callable[["T"], np.ndarray],
-    batch_size: int = 64,
-    num_workers: int = os.cpu_count(),
-    include_last: bool = False,
-) -> Iterable[np.ndarray]:
-    """
-    Create a dataloader for the given items.
-    entries are mapped in order across multiple workers
-    """
-    with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as pool:
-        stack = []
-        for i in pool.map(transform, items):
-            stack.append(i)
-            if len(stack) == batch_size:
-                yield np.stack(stack)
-                stack = []
-        if include_last and len(stack) > 0:
-            yield np.stack(stack)
-
-
-# ========================================================================= #
 # RESAVE                                                                    #
 # ========================================================================= #
 
@@ -129,10 +101,21 @@ def dataloader(
 T = TypeVar('T')
 
 
+class _Dataset:
+    def __init__(self, items: Sequence[T], transform: Callable[[T], np.ndarray]):
+        self.items = items
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, idx):
+        return self.transform(self.items[idx])
+
+
 def dataset_save_as_hdf5(
-    items: Sequence[T],
+    dataset: _Dataset,
     *,
-    transform: Callable[[T], np.ndarray],  # output shape must match `obs_shape`
     obs_shape: Tuple[int, int, int],  # (H, W, C) usually
     save_path: Path | str,
     batch_size: int = 64,
@@ -144,6 +127,12 @@ def dataset_save_as_hdf5(
     Re-save the given Scryfall dataset as an HDF5 file.
     - the hdf5 file will have the key `data`
     """
+    try:
+        from torch.utils.data import DataLoader
+        from torch.utils.data import Dataset
+    except ImportError:
+        raise ImportError('torch is not installed. Please install it via `pip install torch`')
+
     save_path = Path(save_path)
     # defaults & checks
     if not save_path.name.endswith('.h5'):
@@ -158,7 +147,7 @@ def dataset_save_as_hdf5(
         # create new dataset
         d = f.create_dataset(
             name='data',
-            shape=(len(items), *obs_shape),
+            shape=(len(dataset), *obs_shape),
             dtype='uint8',
             chunks=(1, *obs_shape),
             compression='gzip',
@@ -169,10 +158,10 @@ def dataset_save_as_hdf5(
             track_times=False,
         )
         # dataloader
-        loader = dataloader(items, transform=transform, batch_size=batch_size, num_workers=num_workers)
+        loader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, drop_last=False)
         # save data -- TODO: this is not atomic! if conversion fails the file is leftover!
         logger.info(f'Starting dataset conversion: {repr(save_path)}')
-        with tqdm(desc=f'Converting:', total=len(items), dynamic_ncols=True) as p:
+        with tqdm(desc=f'Converting:', total=len(dataset), dynamic_ncols=True) as p:
             for i, batch in enumerate(loader):
                 d[i*batch_size:(i+1)*batch_size] = batch
                 p.update(len(batch))
@@ -261,7 +250,7 @@ def generate_converted_dataset(
     # output settings
     out_img_type: ScryfallImageType = ScryfallImageType.border_crop,
     out_bulk_type: ScryfallBulkType = ScryfallBulkType.default_cards,
-    out_obs_compression_lvl: int = 9,
+    out_obs_compression_lvl: int = 1,
     out_obs_size_wh: Optional[Tuple[int | None, int | None]] = None,  # (W, H) -- None is auto computed based on default size.
     out_obs_channels_first: bool = False,
     out_obs_pad_to_square: bool = False,
@@ -352,8 +341,7 @@ def generate_converted_dataset(
 
     # convert the dataset
     dataset_save_as_hdf5(
-        cards,
-        transform=transform,
+        dataset=_Dataset(items=cards, transform=transform),
         save_path=path_data,
         overwrite=save_overwrite,
         obs_shape=obs_shape,

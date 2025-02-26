@@ -44,4 +44,5 @@ convert = [
     "numpy",
     "pillow",
     "tqdm",
+    "torch",
 ]
