@@ -179,6 +179,9 @@ class ScryfallCardFace:
 
         return Image.open(self.download(verbose=verbose))
 
+    def __repr__(self):
+        return f'<ScryfallCardFace: "{self.name}" ({self.set_code}), {self.img_path}>'
+
     def dl_and_open_im_resized(
         self,
         channel_mode: Literal["rgb", "skip"] = "rgb",
@@ -191,10 +194,10 @@ class ScryfallCardFace:
             img = img.convert('RGB')
         if self.img_type.size != img.size:
             if resize_mode == 'resize':
-                logger.warning(f'image shape mismatch: {img.size} != {self.img_type.size}')
+                logger.warning(f'image shape mismatch: {img.size} != {self.img_type.size} {self}')
                 img = img.resize(self.img_type.size)
             elif resize_mode == 'error':
-                raise RuntimeError(f'image shape mismatch: {img.size} != {self.img_type.size}')
+                raise RuntimeError(f'image shape mismatch: {img.size} != {self.img_type.size} {self}')
             elif resize_mode == 'skip':
                 pass
             else:
