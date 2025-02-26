@@ -391,7 +391,7 @@ def _make_parser_scryfall_convert(parser=None):
     parser.add_argument('--batch-size', type=int, default=128,              help="number of images to load in every batch when processing the dataset")
     parser.add_argument('--skip-speed-test', action='store_true',           help="if specified, disabled testing the before and after dataset speeds")
     parser.add_argument('--suffix', type=str, default='',                   help="string to add to the end of the file name")
-    parser.add_argument('--no-overwrite', action='store_true',              help="overwrite existing generated dataset files")
+    parser.add_argument('--overwrite', action='store_true',              help="overwrite existing generated dataset files")
     parser.add_argument('--compression-lvl', type=int, default=4,           help="the compression level of the h5py file (0 to 9)")
     # return the parser
     return parser
@@ -419,7 +419,7 @@ def _run_scryfall_convert(args):
         out_obs_pad_to_square=args.pad_to_square,
         # save options
         save_root=args.out_root,
-        save_overwrite=not args.no_overwrite,
+        save_overwrite=args.overwrite,
         # image download settings
         # data_root=args.data_root,
         imgs_force_update=args.force_update,
