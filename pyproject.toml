@@ -44,5 +44,4 @@ convert = [
     "numpy",
     "pillow",
     "tqdm",
-    "torch", # TODO: remove this...
 ]

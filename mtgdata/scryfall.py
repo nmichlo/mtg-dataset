@@ -181,19 +181,25 @@ class ScryfallCardFace:
 
     def dl_and_open_im_resized(
         self,
-        mode: Literal["resize", "error"] = "resize",
+        channel_mode: Literal["rgb", "skip"] = "rgb",
+        resize_mode: Literal["resize", "error", "skip"] = "resize",
         *,
         verbose: bool = True,
     ) -> "Image.Image":
         img = self.dl_and_open_im(verbose=verbose)
+        if channel_mode == 'rgb':
+            img = img.convert('RGB')
         if self.img_type.size != img.size:
-            if mode == 'resize':
+            if resize_mode == 'resize':
                 logger.warning(f'image shape mismatch: {img.size} != {self.img_type.size}')
                 img = img.resize(self.img_type.size)
-            elif mode == 'error':
+            elif resize_mode == 'error':
                 raise RuntimeError(f'image shape mismatch: {img.size} != {self.img_type.size}')
+            elif resize_mode == 'skip':
+                pass
             else:
-                raise KeyError(f'invalid mode: {mode}')
+                raise KeyError(f'invalid mode: {resize_mode}')
+
         return img
 
 

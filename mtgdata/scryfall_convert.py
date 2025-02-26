@@ -68,11 +68,13 @@ class PilResizeNumpyTransform(object):
         # convert to numpy
         img = np.array(img)
         # check RGB
-        assert img.ndim == 3
-        assert img.shape[-1] == 3
+        assert img.ndim == 3, f'expected 3 dimensions, got: {img.ndim}'
+        assert img.shape[-1] == 3, f'expected 3 channels, got: {img.shape[-1]}'
         # check shapes
-        if self._assert_shape is not None: assert img.shape == self._assert_shape
-        if self._assert_dtype is not None: assert img.dtype == self._assert_dtype
+        if self._assert_shape is not None:
+            assert img.shape == self._assert_shape, f'expected shape: {self._assert_shape}, got: {img.shape}'
+        if self._assert_dtype is not None:
+            assert img.dtype == self._assert_dtype, f'expected dtype: {self._assert_dtype}, got: {img.dtype}'
         # pad to a square
         if self._pad_to_square:
             H, W, C = img.shape
@@ -170,7 +172,7 @@ def dataset_save_as_hdf5(
         loader = dataloader(items, transform=transform, batch_size=batch_size, num_workers=num_workers)
         # save data -- TODO: this is not atomic! if conversion fails the file is leftover!
         logger.info(f'Starting dataset conversion: {repr(save_path)}')
-        with tqdm(desc=f'Converting:', dynamic_ncols=True) as p:
+        with tqdm(desc=f'Converting:', total=len(items), dynamic_ncols=True) as p:
             for i, batch in enumerate(loader):
                 d[i*batch_size:(i+1)*batch_size] = batch
                 p.update(len(batch))
@@ -251,7 +253,7 @@ class CardTransform:
         self.transform = transform
 
     def __call__(self, card: ScryfallCardFace) -> np.ndarray:
-        img = card.dl_and_open_im()
+        img = card.dl_and_open_im_resized()
         return self.transform(img)
 
 
@@ -265,13 +267,13 @@ def generate_converted_dataset(
     out_obs_pad_to_square: bool = False,
     # save options
     save_root: Optional[str] = None,
-    save_overwrite: bool = False,
+    save_overwrite: bool = True,
     # image download settings
     imgs_force_update: bool = False,
     imgs_download_threads: int = os.cpu_count() * 2,
     # conversion settings
     convert_batch_size: int = 128,
-    convert_num_workers: int = os.cpu_count(),
+    convert_num_workers: int = os.cpu_count() // 2,
     convert_speed_test: bool = False,
 ) -> Tuple[str, str]:
 
@@ -392,11 +394,11 @@ def _make_parser_scryfall_convert(parser=None):
     parser.add_argument('-s', '--size', type=str, default='default',        help="resized image shape: `<HEIGHT|?>x<WIDTH|?>` | `default` eg. --size=224x160, --size=512x? or --size==default")
     parser.add_argument('-c', '--channels-first', action='store_true',      help="if specified, saves image channels first with the shape: (C, H, W) instead of: (H, W, C)")
     parser.add_argument('-p', '--pad-to-square', action='store_true',       help="if specified, zero pad the resized observations (H, W) to squares (max(H, W), max(H, W))")
-    parser.add_argument('--num-workers', type=int, default=os.cpu_count(),  help="number of workers to use when processing the dataset")
+    parser.add_argument('--num-workers', type=int, default=max(os.cpu_count() // 2, 1),  help="number of workers to use when processing the dataset")
     parser.add_argument('--batch-size', type=int, default=128,              help="number of images to load in every batch when processing the dataset")
     parser.add_argument('--skip-speed-test', action='store_true',           help="if specified, disabled testing the before and after dataset speeds")
     parser.add_argument('--suffix', type=str, default='',                   help="string to add to the end of the file name")
-    parser.add_argument('--overwrite', action='store_true',                 help="overwrite existing generated dataset files")
+    parser.add_argument('--no-overwrite', action='store_true',                 help="overwrite existing generated dataset files")
     parser.add_argument('--compression-lvl', type=int, default=4,           help="the compression level of the h5py file (0 to 9)")
     # return the parser
     return parser
@@ -424,7 +426,7 @@ def _run_scryfall_convert(args):
         out_obs_pad_to_square=args.pad_to_square,
         # save options
         save_root=args.out_root,
-        save_overwrite=args.overwrite,
+        save_overwrite=not args.no_overwrite,
         # image download settings
         # data_root=args.data_root,
         imgs_force_update=args.force_update,
