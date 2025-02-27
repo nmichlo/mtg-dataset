@@ -28,6 +28,7 @@ __all__ = [
 ]
 
 import warnings
+from pathlib import Path
 
 
 # ========================================================================= #
@@ -67,8 +68,8 @@ class Hdf5Dataset:
     WARNING: this should probably not be used across multiple hosts?
     """
 
-    def __init__(self, h5_path: str, h5_dataset_name: str = 'data', transform=None):
-        self._h5_path = h5_path
+    def __init__(self, h5_path: str | Path, h5_dataset_name: str = 'data', transform=None):
+        self._h5_path = Path(h5_path)
         self._h5_dataset_name = h5_dataset_name
         self._hdf5_file, self._hdf5_data = self._make_hdf5()
         self._transform = transform
@@ -79,7 +80,7 @@ class Hdf5Dataset:
         except ImportError:
             raise ImportError('h5py is not installed. Please install it via `pip install h5py`')
         # TODO: can this cause a memory leak if it is never closed?
-        hdf5_file = h5py.File(self._h5_path, 'r', swmr=True)
+        hdf5_file = h5py.File(str(self._h5_path), 'r', swmr=True)
         hdf5_data = hdf5_file[self._h5_dataset_name]
         return hdf5_file, hdf5_data
 

@@ -1,5 +1,5 @@
 
-from mtgdata.scryfall import ScryfallDataset, ScryfallImageType, ScryfallBulkType
+from mtgdata.scryfall import ScryfallDataset, ScryfallCardFaceDatasetManager, ScryfallImageType, ScryfallBulkType
 from mtgdata.util.hdf5 import Hdf5Dataset
 
 from mtgdata.scryfall_convert import dataset_save_as_hdf5

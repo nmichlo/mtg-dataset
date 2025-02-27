@@ -24,6 +24,7 @@
 
 __all__ = [
     "ScryfallDataset",
+    "ScryfallCardFaceDatasetManager",
     "ScryfallCardFace",
     "ScryfallImageType",
     "ScryfallBulkType",
@@ -33,10 +34,11 @@ import dataclasses
 import json
 import logging
 import os
+import warnings
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterator, Literal, TYPE_CHECKING
+from typing import Any, Callable, Iterator, Literal, TYPE_CHECKING
 from typing import Tuple
 
 import duckdb
@@ -87,11 +89,6 @@ class ScryfallImageType(str, Enum):
         return _IMG_TYPE_EXTENSIONS[self]
 
     @property
-    def hwc(self) -> Tuple[int, int, int] | None:
-        h, w, c = _IMG_TYPE_SIZES_HWC[self]
-        return h, w, c
-
-    @property
     def size(self) -> Tuple[int, int] | None:
         h, w, c = _IMG_TYPE_SIZES_HWC[self]
         return w, h  # PIL uses (W, H)
@@ -105,6 +102,29 @@ class ScryfallImageType(str, Enum):
     def width(self) -> int:
         h, w, c = _IMG_TYPE_SIZES_HWC[self]
         return w
+
+    @property
+    def channels(self) -> int:
+        h, w, c = _IMG_TYPE_SIZES_HWC[self]
+        return c
+
+    def get_scaled_size(self, width: int | None, height: int | None) -> Tuple[int, int]:
+        if height is None and width is None:
+            out_w = self.width
+            out_h = self.height
+        elif height is None:
+            r = width / self.width
+            out_w = width
+            out_h = max(round(self.height * r), 1)
+        elif width is None:
+            r = height / self.height
+            out_w = max(round(self.width * r), 1)
+            out_h = height
+        else:
+            r = max(width / self.width, height / self.height)
+            out_w = max(round(self.width * r), 1)
+            out_h = max(round(self.height * r), 1)
+        return out_w, out_h
 
 
 _IMG_TYPE_EXTENSIONS: dict[ScryfallImageType, Literal['jpg', 'png']] = {
@@ -126,11 +146,9 @@ _IMG_TYPE_SIZES_HWC: dict[ScryfallImageType, Tuple[int, int, int] | None] = {
     ScryfallImageType.art_crop:    None,
 }
 
-_IMG_SHAPES = None
-
 
 # ========================================================================= #
-# Scryfall Dataset                                                          #
+# Scryfall Data Fetcher                                                     #
 # ========================================================================= #
 
 
@@ -239,7 +257,7 @@ class _DatasetIndex:
         )
 
 
-class ScryfallDataset:
+class ScryfallCardFaceDatasetManager:
     """
     Scryfall Card Face Dataset.
 
@@ -257,7 +275,7 @@ class ScryfallDataset:
 
     def __init__(
         self,
-        img_type: ScryfallImageType = ScryfallImageType.normal,
+        img_type: ScryfallImageType = ScryfallImageType.small,
         bulk_type: ScryfallBulkType = ScryfallBulkType.default_cards,
         *,
         ds_dir: Path | None = None,
@@ -290,39 +308,10 @@ class ScryfallDataset:
         return self._bulk_type
 
     @property
-    def ds_dir(self) -> Path:
-        return self.__ds_dir
-
-    @property
-    def _path_sets_dir(self) -> Path:
-        return self.__ds_dir / 'sets'
-
-    @property
-    def bulk_datetime(self) -> datetime:
+    def bulk_date(self) -> str:
         index, _ = self._download_bulk_data()
         date = index.bulk_data['updated_at']
-        return datetime.fromisoformat(date)
-
-    @property
-    def bulk_date(self) -> str:
-        return self.bulk_datetime.strftime('%Y%m%d%H%M%S')  # same as in bulk filename
-
-    # ~=~=~ prepare ~=~=~
-
-    def prepare(
-        self,
-        *,
-        force_update: bool = False,
-        download_threads: int = 64,
-    ) -> "ScryfallDataset":
-        if force_update:
-            self.invalidate_cache()
-        self.download_all(
-            proxy=None,
-            threads=download_threads,
-            verbose=True,
-        )
-        return self
+        return datetime.fromisoformat(date).strftime('%Y%m%d%H%M%S')  # same as in bulk filename
 
     # ~=~=~ DB ~=~=~
 
@@ -347,8 +336,7 @@ class ScryfallDataset:
 
     # ~=~=~ bulk data ~=~=~
 
-    def invalidate_cache(self) -> "ScryfallDataset":
-        # call this to force a cache update
+    def invalidate_cache(self) -> "ScryfallCardFaceDatasetManager":
         self.__path_index.unlink(missing_ok=True)
         self.__path_bulk.unlink(missing_ok=True)
         return self
@@ -375,6 +363,9 @@ class ScryfallDataset:
         return index, self.__path_bulk
 
     # ~=~=~ yield card faces ~=~=~
+
+    def __repr__(self):
+        return f'<ScryfallDataset: {self.bulk_date}, {self.bulk_type}+{self.img_type}>'
 
     def __iter__(self) -> Iterator['ScryfallCardFace']:
         return self.yield_all()
@@ -408,7 +399,7 @@ class ScryfallDataset:
             row = cursor.fetchone()
             if row is None:
                 break
-            yield ScryfallCardFace(*row, _sets_dir=self._path_sets_dir, _proxy=shared_proxy)
+            yield ScryfallCardFace(*row, _sets_dir=self.__ds_dir / 'sets', _proxy=shared_proxy)
 
     def download_all(
         self,
@@ -440,6 +431,69 @@ class ScryfallDataset:
 
 
 # ========================================================================= #
+# Dataset                                                                   #
+# ========================================================================= #
+
+
+_MISSING = object()
+
+
+def _noop(x):
+    return x
+
+
+class ScryfallDataset:
+    # torch compatible dataset
+
+    def __init__(
+        self,
+        img_type: ScryfallImageType = ScryfallImageType.small,
+        bulk_type: ScryfallBulkType = ScryfallBulkType.default_cards,
+        *,
+        transform: Callable[[ScryfallCardFace], Any] = None,
+        ds_dir: Path | None = None,
+        force_update: bool = False,
+        download_mode: Literal['now', 'ondemand', 'none'] = 'now',
+    ):
+        # create dataset
+        self._ds = ScryfallCardFaceDatasetManager(
+            img_type=img_type,
+            bulk_type=bulk_type,
+            ds_dir=ds_dir,
+        )
+        if force_update:
+            self._ds.invalidate_cache()
+        # fetch cards
+        if download_mode == 'now':
+            self._ondemand_dl = False
+            self._cards = self._ds.download_all()
+        else:
+            self._ondemand_dl = download_mode == 'ondemand'
+            self._cards = list(self._ds.yield_all())
+        # init
+        self.transform = transform if transform else _noop
+
+    @property
+    def ds(self) -> ScryfallCardFaceDatasetManager:
+        return self._ds
+
+    def __len__(self):
+        return len(self._cards)
+
+    def __getitem__(self, item: int) -> ScryfallCardFace:
+        card = self._cards[item]
+        if self._ondemand_dl:
+            card.download()
+        return self.transform(card)
+
+    def __iter__(self) -> Iterator[ScryfallCardFace]:
+        yield from (self[i] for i in range(len(self)))
+
+    def __repr__(self):
+        return f'<ScryfallDataset: {self._ds.bulk_date}, {self._ds.bulk_type}+{self._ds.img_type}={len(self)}>'
+
+
+# ========================================================================= #
 # ENTRY POINT - HELPERS                                                     #
 # ========================================================================= #
 
@@ -462,15 +516,15 @@ def _run_scryfall_prepare(args):
     if args.data_root is not None:
         os.environ['DATA_ROOT'] = args.data_root
 
-    ds = ScryfallDataset(bulk_type=args.bulk_type, img_type=args.img_type)
+    ds = ScryfallCardFaceDatasetManager(bulk_type=args.bulk_type, img_type=args.img_type)
 
     if args.force_update:
         logger.info('Forcing cache update...')
         ds.invalidate_cache()
 
-    logger.info(f'Downloading images for: {repr(args.bulk_type)} {repr(args.img_type)}')
+    logger.info(f'Downloading images for: {args.bulk_type} {args.img_type}')
     all_cards = ds.download_all(threads=args.download_threads, verbose=True)
-    logger.info(f'Finished downloading {len(all_cards)} images for: {repr(args.bulk_type)} {repr(args.img_type)}')
+    logger.info(f'Finished downloading {len(all_cards)} images for: {args.bulk_type} {args.img_type}')
 
 
 # ========================================================================= #
