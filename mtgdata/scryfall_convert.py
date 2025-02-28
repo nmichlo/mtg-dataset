@@ -314,7 +314,7 @@ def generate_converted_dataset(
         data_shape_str = f'{data_shape_str}sqr'
 
     # get paths & make sure parent folder exists
-    save_root = Path(save_root) if save_root else dataset.ds.data_root / 'converted'
+    save_root = Path(save_root) if save_root else dataset.ds.ds_dir / 'converted'
     save_root.mkdir(parents=True, exist_ok=True)
     bt, it = out_bulk_type.replace('_', '-'), out_img_type.replace('_', '-')
     path_data = save_root / f'mtg_{bt}-{dataset.ds.bulk_date}_{it}_{data_shape_str}_c{out_obs_compression_lvl}.h5'

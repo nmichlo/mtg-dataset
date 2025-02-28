@@ -72,9 +72,9 @@ the `mtgdata.ScryfallDataset` object. Similar arguments can be specified as that
 command line approach.
 
 ```python3
-from mtgdata import ScryfallDataset 
+from mtgdata import ScryfallCardFaceDatasetManager
 
-data = ScryfallDataset(
+data = ScryfallCardFaceDatasetManager(
     img_type='border_crop',
     bulk_type='default_cards',
     transform=None,

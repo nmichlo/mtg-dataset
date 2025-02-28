@@ -185,7 +185,9 @@ class ScryfallCardFace:
 
     def download(self, *, verbose: bool = True) -> Path:
         if self._proxy is None:
-            raise RuntimeError('proxy is not set!')
+            if self.img_path.exists():
+                return self.img_path
+            raise RuntimeError('proxy is not set for downloading!')
         self._proxy.download(self.img_uri, str(self.img_path), exists_mode='skip', verbose=verbose, make_dirs=True, attempts=128, timeout=8)
         return self.img_path
 
@@ -278,25 +280,49 @@ class ScryfallCardFaceDatasetManager:
         img_type: ScryfallImageType = ScryfallImageType.small,
         bulk_type: ScryfallBulkType = ScryfallBulkType.default_cards,
         *,
-        ds_dir: Path | None = None,
+        ds_dir: Path | str | None = None,
+        data_root: Path | str | None = None,
     ):
         self._img_type = ScryfallImageType(img_type)
         self._bulk_type = ScryfallBulkType(bulk_type)
-        # get root dir
+
+        # get data root
+        if data_root:
+            data_root = Path(data_root)
+        else:
+            data_root = Path(os.environ.get('DATA_ROOT', 'data'))
+
+        # get ds dir
         if ds_dir is None:
-            data_root = os.environ.get('DATA_ROOT', 'data')
-            ds_dir = Path(data_root) / 'scryfall' / bulk_type / img_type
+            ds_dir = Path(data_root) / 'scryfall' / self._bulk_type.value / self._img_type.value
+        else:
+            if ds_dir.is_absolute():
+                warnings.warn('ds_dir is an absolute path, ignoring data_root')
+                ds_dir = Path(ds_dir)
+                data_root = ds_dir  # unknown
+            else:
+                ds_dir = data_root / ds_dir
+
         # check dirs
+        print(f'initialising dataset: {ds_dir} (data_root={data_root})')
         ds_dir.mkdir(parents=True, exist_ok=True)
         if not ds_dir.is_dir():
             raise NotADirectoryError(f'path is not a directory: {ds_dir}')
+
         # initialise dataset
+        self.__data_root = data_root
         self.__ds_dir = ds_dir
         self.__path_index = ds_dir / 'index.json'
         self.__path_bulk = ds_dir / 'bulk.json'
 
     @property
     def data_root(self) -> Path:
+        # all datasets
+        return self.__data_root
+
+    @property
+    def ds_dir(self) -> Path:
+        # this dataset
         return self.__ds_dir
 
     @property
@@ -451,7 +477,8 @@ class ScryfallDataset:
         bulk_type: ScryfallBulkType = ScryfallBulkType.default_cards,
         *,
         transform: Callable[[ScryfallCardFace], Any] = None,
-        ds_dir: Path | None = None,
+        ds_dir: Path | str | None = None,
+        data_root: Path | str | None = None,
         force_update: bool = False,
         download_mode: Literal['now', 'ondemand', 'none'] = 'now',
     ):
@@ -460,6 +487,7 @@ class ScryfallDataset:
             img_type=img_type,
             bulk_type=bulk_type,
             ds_dir=ds_dir,
+            data_root=data_root,
         )
         if force_update:
             self._ds.invalidate_cache()
