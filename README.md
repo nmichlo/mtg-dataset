@@ -129,7 +129,7 @@ the `mtgdata.scryfall_convert.generate_converted_dataset` function. Similar argu
 as that of the command line approach.
 
 ```python3
-from mtgdata import generate_converted_dataset 
+from mtgdata import generate_converted_dataset
 
 generate_converted_dataset(
     out_img_type='border_crop',

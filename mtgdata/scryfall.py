@@ -69,23 +69,23 @@ CACHE_STALE_AFTER = timedelta(days=365)
 
 
 class ScryfallBulkType(str, Enum):
-    oracle_cards = 'oracle_cards'
-    unique_artwork = 'unique_artwork'
-    default_cards = 'default_cards'
-    all_cards = 'all_cards'
-    rulings = 'rulings'
+    oracle_cards = "oracle_cards"
+    unique_artwork = "unique_artwork"
+    default_cards = "default_cards"
+    all_cards = "all_cards"
+    rulings = "rulings"
 
 
 class ScryfallImageType(str, Enum):
-    small = 'small'
-    border_crop = 'border_crop'
-    normal = 'normal'
-    large = 'large'
-    png = 'png'
-    art_crop = 'art_crop'
+    small = "small"
+    border_crop = "border_crop"
+    normal = "normal"
+    large = "large"
+    png = "png"
+    art_crop = "art_crop"
 
     @property
-    def extension(self) -> Literal['jpg', 'png']:
+    def extension(self) -> Literal["jpg", "png"]:
         return _IMG_TYPE_EXTENSIONS[self]
 
     @property
@@ -127,23 +127,23 @@ class ScryfallImageType(str, Enum):
         return out_w, out_h
 
 
-_IMG_TYPE_EXTENSIONS: dict[ScryfallImageType, Literal['jpg', 'png']] = {
-    ScryfallImageType.small:       'jpg',
-    ScryfallImageType.border_crop: 'jpg',
-    ScryfallImageType.normal:      'jpg',
-    ScryfallImageType.large:       'jpg',
-    ScryfallImageType.png:         'png',
-    ScryfallImageType.art_crop:    'jpg',
+_IMG_TYPE_EXTENSIONS: dict[ScryfallImageType, Literal["jpg", "png"]] = {
+    ScryfallImageType.small: "jpg",
+    ScryfallImageType.border_crop: "jpg",
+    ScryfallImageType.normal: "jpg",
+    ScryfallImageType.large: "jpg",
+    ScryfallImageType.png: "png",
+    ScryfallImageType.art_crop: "jpg",
 }
 
 _IMG_TYPE_SIZES_HWC: dict[ScryfallImageType, Tuple[int, int, int] | None] = {
     # aspect ratio ~= 7:5 (H = 1.4 W)
-    ScryfallImageType.small:       (204,  146, 3),
-    ScryfallImageType.border_crop: (680,  480, 3),
-    ScryfallImageType.normal:      (680,  488, 3),
-    ScryfallImageType.large:       (936,  672, 3),
-    ScryfallImageType.png:         (1040, 745, 3),
-    ScryfallImageType.art_crop:    None,
+    ScryfallImageType.small: (204, 146, 3),
+    ScryfallImageType.border_crop: (680, 480, 3),
+    ScryfallImageType.normal: (680, 488, 3),
+    ScryfallImageType.large: (936, 672, 3),
+    ScryfallImageType.png: (1040, 745, 3),
+    ScryfallImageType.art_crop: None,
 }
 
 
@@ -177,7 +177,7 @@ class ScryfallCardFace:
 
     @property
     def img_path(self) -> Path:
-        return self._sets_dir / f'{self.set_code}/{self.id}.{self.img_type.extension}'
+        return self._sets_dir / f"{self.set_code}/{self.id}.{self.img_type.extension}"
 
     @property
     def url_path_pair(self) -> Tuple[str, str]:
@@ -187,15 +187,25 @@ class ScryfallCardFace:
         if self._proxy is None:
             if self.img_path.exists():
                 return self.img_path
-            raise RuntimeError('proxy is not set for downloading!')
-        self._proxy.download(self.img_uri, str(self.img_path), exists_mode='skip', verbose=verbose, make_dirs=True, attempts=128, timeout=8)
+            raise RuntimeError("proxy is not set for downloading!")
+        self._proxy.download(
+            self.img_uri,
+            str(self.img_path),
+            exists_mode="skip",
+            verbose=verbose,
+            make_dirs=True,
+            attempts=128,
+            timeout=8,
+        )
         return self.img_path
 
     def dl_and_open_im(self, *, verbose: bool = True) -> "Image.Image":
         try:
             from PIL import Image
         except ImportError:
-            raise ImportError('PIL is not installed, please install it using: `pip install pillow`')
+            raise ImportError(
+                "PIL is not installed, please install it using: `pip install pillow`"
+            )
 
         return Image.open(self.download(verbose=verbose))
 
@@ -210,18 +220,22 @@ class ScryfallCardFace:
         verbose: bool = True,
     ) -> "Image.Image":
         img = self.dl_and_open_im(verbose=verbose)
-        if channel_mode == 'rgb':
-            img = img.convert('RGB')
+        if channel_mode == "rgb":
+            img = img.convert("RGB")
         if self.img_type.size != img.size:
-            if resize_mode == 'resize':
-                logger.warning(f'image shape mismatch: {img.size} != {self.img_type.size} {self}')
+            if resize_mode == "resize":
+                logger.warning(
+                    f"image shape mismatch: {img.size} != {self.img_type.size} {self}"
+                )
                 img = img.resize(self.img_type.size)
-            elif resize_mode == 'error':
-                raise RuntimeError(f'image shape mismatch: {img.size} != {self.img_type.size} {self}')
-            elif resize_mode == 'skip':
+            elif resize_mode == "error":
+                raise RuntimeError(
+                    f"image shape mismatch: {img.size} != {self.img_type.size} {self}"
+                )
+            elif resize_mode == "skip":
                 pass
             else:
-                raise KeyError(f'invalid mode: {resize_mode}')
+                raise KeyError(f"invalid mode: {resize_mode}")
 
         return img
 
@@ -240,19 +254,19 @@ class _DatasetIndex:
 
     @classmethod
     def _query_bulk_data(cls, bulk_type: ScryfallBulkType) -> dict[str, Any]:
-        response = requests.get(f'https://api.scryfall.com/bulk-data')
+        response = requests.get("https://api.scryfall.com/bulk-data")
         response.raise_for_status()
         data = response.json()
         # find the correct bulk data
-        for item in data['data']:
-            if item['type'] == bulk_type:
+        for item in data["data"]:
+            if item["type"] == bulk_type:
                 return item
         raise ValueError(
-            f'bulk type {bulk_type} not found in bulk data list, valid types are: {[d["type"] for d in data["data"]]}'
+            f"bulk type {bulk_type} not found in bulk data list, valid types are: {[d['type'] for d in data['data']]}"
         )
 
     @classmethod
-    def from_query(cls, bulk_type: ScryfallBulkType) -> '_DatasetIndex':
+    def from_query(cls, bulk_type: ScryfallBulkType) -> "_DatasetIndex":
         return cls(
             bulk_data=cls._query_bulk_data(bulk_type),
             last_updated=datetime.now(pytz.utc),
@@ -290,30 +304,35 @@ class ScryfallCardFaceDatasetManager:
         if data_root:
             data_root = Path(data_root)
         else:
-            data_root = Path(os.environ.get('DATA_ROOT', 'data'))
+            data_root = Path(os.environ.get("DATA_ROOT", "data"))
 
         # get ds dir
         if ds_dir is None:
-            ds_dir = Path(data_root) / 'scryfall' / self._bulk_type.value / self._img_type.value
+            ds_dir = (
+                Path(data_root)
+                / "scryfall"
+                / self._bulk_type.value
+                / self._img_type.value
+            )
         else:
             if ds_dir.is_absolute():
-                warnings.warn('ds_dir is an absolute path, ignoring data_root')
+                warnings.warn("ds_dir is an absolute path, ignoring data_root")
                 ds_dir = Path(ds_dir)
                 data_root = ds_dir  # unknown
             else:
                 ds_dir = data_root / ds_dir
 
         # check dirs
-        print(f'initialising dataset: {ds_dir} (data_root={data_root})')
+        print(f"initialising dataset: {ds_dir} (data_root={data_root})")
         ds_dir.mkdir(parents=True, exist_ok=True)
         if not ds_dir.is_dir():
-            raise NotADirectoryError(f'path is not a directory: {ds_dir}')
+            raise NotADirectoryError(f"path is not a directory: {ds_dir}")
 
         # initialise dataset
         self.__data_root = data_root
         self.__ds_dir = ds_dir
-        self.__path_index = ds_dir / 'index.json'
-        self.__path_bulk = ds_dir / 'bulk.json'
+        self.__path_index = ds_dir / "index.json"
+        self.__path_bulk = ds_dir / "bulk.json"
 
     @property
     def data_root(self) -> Path:
@@ -336,27 +355,29 @@ class ScryfallCardFaceDatasetManager:
     @property
     def bulk_date(self) -> str:
         index, _ = self._download_bulk_data()
-        date = index.bulk_data['updated_at']
-        return datetime.fromisoformat(date).strftime('%Y%m%d%H%M%S')  # same as in bulk filename
+        date = index.bulk_data["updated_at"]
+        return datetime.fromisoformat(date).strftime(
+            "%Y%m%d%H%M%S"
+        )  # same as in bulk filename
 
     # ~=~=~ DB ~=~=~
 
     def __read_index(self) -> _DatasetIndex | None:
         if self.__path_index.exists():
-            with AtomicOpen(self.__path_index, 'r') as fp:
+            with AtomicOpen(self.__path_index, "r") as fp:
                 dat = json.load(fp)
                 return _DatasetIndex(
-                    bulk_data=dat['bulk_data'],
-                    last_updated=datetime.fromisoformat(dat['last_updated']),
+                    bulk_data=dat["bulk_data"],
+                    last_updated=datetime.fromisoformat(dat["last_updated"]),
                 )
         else:
             return None
 
     def __update_index(self, index: _DatasetIndex) -> None:
-        with AtomicOpen(self.__path_index, 'w') as fp:
+        with AtomicOpen(self.__path_index, "w") as fp:
             dat = {
-                'bulk_data': index.bulk_data,
-                'last_updated': index.last_updated.isoformat(),
+                "bulk_data": index.bulk_data,
+                "last_updated": index.last_updated.isoformat(),
             }
             json.dump(dat, fp)
 
@@ -377,9 +398,9 @@ class ScryfallCardFaceDatasetManager:
             # if bulk info is different, then download
             if (index is None) or (index.bulk_data != new_index.bulk_data):
                 io_download(
-                    src_url=new_index.bulk_data['download_uri'],
+                    src_url=new_index.bulk_data["download_uri"],
                     dst_path=str(self.__path_bulk),
-                    overwrite_existing=True,
+                    exists_mode="overwrite",
                 )
             self.__update_index(new_index)
             index = new_index
@@ -391,12 +412,14 @@ class ScryfallCardFaceDatasetManager:
     # ~=~=~ yield card faces ~=~=~
 
     def __repr__(self):
-        return f'<ScryfallDataset: {self.bulk_date}, {self.bulk_type}+{self.img_type}>'
+        return f"<ScryfallDataset: {self.bulk_date}, {self.bulk_type}+{self.img_type}>"
 
-    def __iter__(self) -> Iterator['ScryfallCardFace']:
+    def __iter__(self) -> Iterator["ScryfallCardFace"]:
         return self.yield_all()
 
-    def yield_all(self, shared_proxy: ProxyDownloader | None = None) -> Iterator['ScryfallCardFace']:
+    def yield_all(
+        self, shared_proxy: ProxyDownloader | None = None
+    ) -> Iterator["ScryfallCardFace"]:
         # fetch the bulk data
         _, path_bulk = self._download_bulk_data()
         img_type = self._img_type.value
@@ -425,14 +448,16 @@ class ScryfallCardFaceDatasetManager:
             row = cursor.fetchone()
             if row is None:
                 break
-            yield ScryfallCardFace(*row, _sets_dir=self.__ds_dir / 'sets', _proxy=shared_proxy)
+            yield ScryfallCardFace(
+                *row, _sets_dir=self.__ds_dir / "sets", _proxy=shared_proxy
+            )
 
     def download_all(
         self,
         proxy: ProxyDownloader | None = None,
         threads: int = max(os.cpu_count() * 2, 8),
         verbose: bool = True,
-    ) -> list['ScryfallCardFace']:
+    ) -> list["ScryfallCardFace"]:
         cards_list = []
 
         def _itr():
@@ -445,14 +470,14 @@ class ScryfallCardFaceDatasetManager:
 
         failed = proxy.download_threaded(
             _itr(),
-            exists_mode='skip',
+            exists_mode="skip",
             verbose=verbose,
             make_dirs=True,
             threads=threads,
             attempts=128,
             timeout=8,
         )
-        assert not failed, f'failed to download: {failed}'
+        assert not failed, f"failed to download: {failed}"
         return cards_list
 
 
@@ -480,7 +505,7 @@ class ScryfallDataset:
         ds_dir: Path | str | None = None,
         data_root: Path | str | None = None,
         force_update: bool = False,
-        download_mode: Literal['now', 'ondemand', 'none'] = 'now',
+        download_mode: Literal["now", "ondemand", "none"] = "now",
     ):
         # create dataset
         self._ds = ScryfallCardFaceDatasetManager(
@@ -492,11 +517,11 @@ class ScryfallDataset:
         if force_update:
             self._ds.invalidate_cache()
         # fetch cards
-        if download_mode == 'now':
+        if download_mode == "now":
             self._ondemand_dl = False
             self._cards = self._ds.download_all()
         else:
-            self._ondemand_dl = download_mode == 'ondemand'
+            self._ondemand_dl = download_mode == "ondemand"
             self._cards = list(self._ds.yield_all())
         # init
         self.transform = transform if transform else _noop
@@ -518,7 +543,7 @@ class ScryfallDataset:
         yield from (self[i] for i in range(len(self)))
 
     def __repr__(self):
-        return f'<ScryfallDataset: {self._ds.bulk_date}, {self._ds.bulk_type}+{self._ds.img_type}={len(self)}>'
+        return f"<ScryfallDataset: {self._ds.bulk_date}, {self._ds.bulk_type}+{self._ds.img_type}={len(self)}>"
 
 
 # ========================================================================= #
@@ -530,29 +555,63 @@ def _make_parser_scryfall_prepare(parser=None):
     # make default parser
     if parser is None:
         import argparse
+
         parser = argparse.ArgumentParser()
     # these should match scryfall_convert.py
-    parser.add_argument('-b', '--bulk_type', type=ScryfallBulkType, default=ScryfallBulkType.default_cards,  help="[default_cards|all_cards|oracle_cards|unique_artwork]. For more information, see: https://scryfall.com/docs/api/bulk-data")
-    parser.add_argument('-i', '--img-type', type=ScryfallImageType, default=ScryfallImageType.small,         help="[png|border_crop|art_crop|large|normal|small]. For more information, see: https://scryfall.com/docs/api/images")
-    parser.add_argument('-d', '--data-root', type=str, default=None,                                help="download and cache directory location")
-    parser.add_argument('-f', '--force-update', action='store_true',                                help="overwrite existing files and ignore caches")
-    parser.add_argument('-t', '--download_threads', type=int, default=max(os.cpu_count() * 2, 128), help="number of threads to use when downloading files")
+    parser.add_argument(
+        "-b",
+        "--bulk_type",
+        type=ScryfallBulkType,
+        default=ScryfallBulkType.default_cards,
+        help="[default_cards|all_cards|oracle_cards|unique_artwork]. For more information, see: https://scryfall.com/docs/api/bulk-data",
+    )
+    parser.add_argument(
+        "-i",
+        "--img-type",
+        type=ScryfallImageType,
+        default=ScryfallImageType.small,
+        help="[png|border_crop|art_crop|large|normal|small]. For more information, see: https://scryfall.com/docs/api/images",
+    )
+    parser.add_argument(
+        "-d",
+        "--data-root",
+        type=str,
+        default=None,
+        help="download and cache directory location",
+    )
+    parser.add_argument(
+        "-f",
+        "--force-update",
+        action="store_true",
+        help="overwrite existing files and ignore caches",
+    )
+    parser.add_argument(
+        "-t",
+        "--download_threads",
+        type=int,
+        default=max(os.cpu_count() * 2, 128),
+        help="number of threads to use when downloading files",
+    )
     return parser
 
 
 def _run_scryfall_prepare(args):
     if args.data_root is not None:
-        os.environ['DATA_ROOT'] = args.data_root
+        os.environ["DATA_ROOT"] = args.data_root
 
-    ds = ScryfallCardFaceDatasetManager(bulk_type=args.bulk_type, img_type=args.img_type)
+    ds = ScryfallCardFaceDatasetManager(
+        bulk_type=args.bulk_type, img_type=args.img_type
+    )
 
     if args.force_update:
-        logger.info('Forcing cache update...')
+        logger.info("Forcing cache update...")
         ds.invalidate_cache()
 
-    logger.info(f'Downloading images for: {args.bulk_type} {args.img_type}')
+    logger.info(f"Downloading images for: {args.bulk_type} {args.img_type}")
     all_cards = ds.download_all(threads=args.download_threads, verbose=True)
-    logger.info(f'Finished downloading {len(all_cards)} images for: {args.bulk_type} {args.img_type}')
+    logger.info(
+        f"Finished downloading {len(all_cards)} images for: {args.bulk_type} {args.img_type}"
+    )
 
 
 # ========================================================================= #
@@ -560,7 +619,7 @@ def _run_scryfall_prepare(args):
 # ========================================================================= #
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # initialise logging
     logging.basicConfig(level=logging.INFO)
     # run application

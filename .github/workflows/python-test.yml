@@ -1,0 +1,47 @@
+# This workflow will install Python dependencies,
+# then run tests over a variety of Python versions.
+
+# name: test
+#
+# on:
+#   push:
+#     tags: [ '*' ]
+#   pull_request:
+#     branches: [ "main", "dev*", "feature*", "fix*"]
+#
+# jobs:
+#   build:
+#     runs-on: ${{ matrix.os }}
+#     strategy:
+#       matrix:
+#         os: [ubuntu-latest] # [ubuntu-latest, windows-latest, macos-latest]
+#         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+#
+#     steps:
+#     - uses: actions/checkout@v4
+#     - uses: astral-sh/setup-uv@v5
+#       with:
+#         version: "latest"
+#         python-version: ${{ matrix.python-version }}
+#
+#     - name: Install & Test Defaults
+#       run: |
+#         uv pip install ".[test]"
+#         pytest --cov=doorway --color=yes --capture=no --verbose -m 'not extra_test' ./tests/
+#
+#     - name: Install & Test Extras
+#       run: |
+#         uv pip install ".[extras]"
+#         pytest --cov=doorway --color=yes --capture=no --verbose -m 'extra_test' ./tests/
+#
+#     # codecov automatically merges all generated files
+#     - uses: codecov/codecov-action@v1
+#       with:
+#         token: ${{ secrets.CODECOV_TOKEN }}
+#         fail_ci_if_error: false
+
+# # @pytest.mark.remote_test
+# # pytest --color=yes --capture=no --verbose -m 'not remote_test'
+#      # * run pytest on non-remote tests
+#      - id: pytest
+#        run: pytest --color=yes --capture=no --verbose -m 'not remote_test'

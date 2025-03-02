@@ -1,34 +1,21 @@
 # This workflow will upload a Python Package
-# using Twine when a release is created
-
 name: publish
-
 on:
+  push:
+    tags: ['v*.*.*']
   release:
     types: [created]
-
 jobs:
   deploy:
-
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v2
-
-    - name: Set up Python
-      uses: actions/setup-python@v2
+    - uses: actions/checkout@v4
+    - uses: astral-sh/setup-uv@v5
       with:
-        python-version: '3.x'
+        version: "latest"
+        python-version: '3.9'
 
-    - name: Install dependencies
+    - name: Build and Publish
       run: |
-        python3 -m pip install --upgrade pip
-        python3 -m pip install setuptools wheel twine
-
-    - name: Build and publish
-      env:
-        TWINE_USERNAME: __token__
-        TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-      run: |
-        python3 setup.py sdist bdist_wheel
-        python3 -m twine upload dist/*
+        uv build
+        uv publish --username="__token__" --password="${{ secrets.PYPI_TOKEN }}"

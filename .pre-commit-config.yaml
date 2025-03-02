@@ -1,0 +1,24 @@
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v2.3.0
+  hooks:
+    - id: trailing-whitespace
+    - id: end-of-file-fixer
+    - id: check-yaml
+    - id: check-added-large-files
+      args: ["--maxkb=500"]
+    - id: check-case-conflict
+    - id: detect-private-key
+
+# - repo: https://github.com/asottile/pyupgrade
+#   rev: v3.19.1
+#   hooks:
+#   - id: pyupgrade
+#     args: [--py39-plus]
+
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.9.9
+  hooks:
+    - id: ruff
+      args: [ --fix ]
+    - id: ruff-format
