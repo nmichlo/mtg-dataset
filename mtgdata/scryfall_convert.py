@@ -130,7 +130,6 @@ def dataset_save_as_hdf5(
     """
     try:
         from torch.utils.data import DataLoader
-        from torch.utils.data import Dataset
     except ImportError:
         raise ImportError(
             "torch is not installed. Please install it via `pip install torch`"
@@ -217,7 +216,7 @@ def _speed_test(desc, dat):
     with tqdm(desc=desc) as p:
         t = time.time()
         while time.time() - t < 5:
-            obs = dat[np.random.randint(0, len(dat))]
+            _ = dat[np.random.randint(0, len(dat))]
             p.update(n=1)
 
 

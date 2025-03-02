@@ -1,3 +1,13 @@
+__all__ = (
+    "ScryfallDataset",
+    "ScryfallCardFaceDatasetManager",
+    "ScryfallImageType",
+    "ScryfallBulkType",
+    "Hdf5Dataset",
+    "dataset_save_as_hdf5",
+    "generate_converted_dataset",
+)
+
 from mtgdata.scryfall import (
     ScryfallDataset,
     ScryfallCardFaceDatasetManager,
