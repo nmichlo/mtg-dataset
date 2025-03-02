@@ -2,6 +2,9 @@
 requires = ["setuptools>=64", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+license-files = []  # https://github.com/astral-sh/uv/issues/9513
+
 [tool.setuptools.packages]
 find = {}
 
