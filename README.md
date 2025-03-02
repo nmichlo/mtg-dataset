@@ -72,30 +72,31 @@ the `mtgdata.ScryfallDataset` object. Similar arguments can be specified as that
 command line approach.
 
 ```python3
-from mtgdata import ScryfallCardFaceDatasetManager
+from mtgdata import ScryfallDataset, ScryfallImageType, ScryfallBulkType
 
-data = ScryfallCardFaceDatasetManager(
-    img_type='border_crop',
-    bulk_type='default_cards',
+data = ScryfallDataset(
+    img_type=ScryfallImageType.small,
+    bulk_type=ScryfallBulkType.default_cards,
     transform=None,
 )
 
 # you can access the dataset elements like usual
 ```
 
-### Proxy Issues?
+<details>
+<summary>Proxy Issues?</summary>
 
 The scrape logic used to obtain the proxy list for `mtgdata.utils.proxy.ProxyDownloader` will
 probably go out of date. You can override the *default* scrape logic used by the Dataset download
 logic  by registering a new scrape function.
 
 ```python3
-from mtgdata.util.proxy import register_proxy_scraper
+from doorway.x import proxies_register_scraper
 from typing import List, Dict
 
-@register_proxy_scraper(name='my_proxy_source', is_default=True)
+@proxies_register_scraper(name='my_proxy_source', is_default=True)
 def custom_proxy_scraper(proxy_type: str) -> List[Dict[str, str]]:
-    # you should respect this setting, but we will just ignore it
+    # you should respect this setting
     assert proxy_type in ('all', 'http', 'https')
     # proxies is a list of dictionaries, where each dictionary only has one entry:
     # - the key is the protocol
@@ -106,7 +107,7 @@ def custom_proxy_scraper(proxy_type: str) -> List[Dict[str, str]]:
     ]
 ```
 
-<br/>
+</details>
 
 ## 🔄 &nbsp;Convert Images to an HDF5 Dataset
 
@@ -129,13 +130,13 @@ the `mtgdata.scryfall_convert.generate_converted_dataset` function. Similar argu
 as that of the command line approach.
 
 ```python3
-from mtgdata import generate_converted_dataset
+from mtgdata import generate_converted_dataset, ScryfallImageType, ScryfallBulkType
 
 generate_converted_dataset(
-    out_img_type='border_crop',
-    out_bulk_type='default_cards',
+    out_img_type=ScryfallImageType.small,
+    out_bulk_type=ScryfallBulkType.default_cards,
     save_root='./data/converted/',
-    out_obs_size=(224, 160),
+    out_obs_size_wh=(224, 160),
     convert_speed_test=True,
 )
 ```
