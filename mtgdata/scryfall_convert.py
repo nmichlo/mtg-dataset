@@ -383,13 +383,13 @@ def _make_parser_scryfall_convert(parser=None):
 def _run_scryfall_convert(args):
     # update args
     if args.size == 'default':
-        obs_size = None
+        obs_size_wh = None
     else:
         try:
-            height, width = (None if (v == '?') else int(v) for v in args.size.split('x'))
-            obs_size = (height, width)
-        except:
-            raise ValueError(f'invalid size argument: {repr(args.size)}, must be of format: "<height|?>x<width|?>" or "default", eg. "--size=224x160", "--size=224x?" or "--size=default"')
+            width, height = (None if (v == '?') else int(v) for v in args.size.split('x'))
+            obs_size_wh = (width, height)
+        except Exception as e:
+            raise ValueError(f'invalid size argument: {repr(args.size)}, must be of format: "<width|?>x<height|?>" or "default", eg. "--size=160x224", "--size=?x224" or "--size=default"')
 
     # convert dataset
     generate_converted_dataset(
@@ -397,7 +397,7 @@ def _run_scryfall_convert(args):
         out_img_type=args.img_type,
         out_bulk_type=args.bulk_type,
         out_obs_compression_lvl=args.compression_lvl,
-        # out_obs_size=obs_size,
+        out_obs_size_wh=obs_size_wh,
         out_obs_channels_first=args.channels_first,
         out_obs_pad_to_square=args.pad_to_square,
         # save options

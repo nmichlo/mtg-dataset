@@ -379,7 +379,7 @@ class ScryfallCardFaceDatasetManager:
                 io_download(
                     src_url=new_index.bulk_data['download_uri'],
                     dst_path=str(self.__path_bulk),
-                    overwrite_existing=True,
+                    exists_mode="overwrite",
                 )
             self.__update_index(new_index)
             index = new_index
