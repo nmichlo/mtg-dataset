@@ -523,6 +523,8 @@ class ScryfallDataset:
         else:
             self._ondemand_dl = download_mode == "ondemand"
             self._cards = list(self._ds.yield_all())
+        # sort cards
+        self._cards.sort(key=lambda x: x.id)
         # init
         self.transform = transform if transform else _noop
 
