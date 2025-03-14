@@ -183,12 +183,13 @@ class ScryfallCardFace:
     def url_path_pair(self) -> Tuple[str, str]:
         return self.img_uri, str(self.img_path)
 
-    def download(self, *, verbose: bool = True) -> Path:
-        if self._proxy is None:
+    def download(self, *, verbose: bool = True, proxy: ProxyDownloader = None) -> Path:
+        proxy = proxy or self._proxy
+        if proxy is None:
             if self.img_path.exists():
                 return self.img_path
             raise RuntimeError("proxy is not set for downloading!")
-        self._proxy.download(
+        proxy.download(
             self.img_uri,
             str(self.img_path),
             exists_mode="skip",
@@ -199,7 +200,9 @@ class ScryfallCardFace:
         )
         return self.img_path
 
-    def dl_and_open_im(self, *, verbose: bool = True) -> "Image.Image":
+    def dl_and_open_im(
+        self, *, verbose: bool = True, proxy: ProxyDownloader = None
+    ) -> "Image.Image":
         try:
             from PIL import Image
         except ImportError:
@@ -207,7 +210,7 @@ class ScryfallCardFace:
                 "PIL is not installed, please install it using: `pip install pillow`"
             )
 
-        return Image.open(self.download(verbose=verbose))
+        return Image.open(self.download(verbose=verbose, proxy=proxy))
 
     def __repr__(self):
         return f'<ScryfallCardFace: "{self.name}" ({self.set_code}), {self.img_path}>'
@@ -218,8 +221,9 @@ class ScryfallCardFace:
         resize_mode: Literal["resize", "error", "skip"] = "resize",
         *,
         verbose: bool = True,
+        proxy: ProxyDownloader = None,
     ) -> "Image.Image":
-        img = self.dl_and_open_im(verbose=verbose)
+        img = self.dl_and_open_im(verbose=verbose, proxy=proxy)
         if channel_mode == "rgb":
             img = img.convert("RGB")
         if self.img_type.size != img.size:
