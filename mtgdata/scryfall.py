@@ -38,8 +38,9 @@ import warnings
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Iterator, Literal, TYPE_CHECKING
+from typing import Any, Callable, Iterator, Literal, TYPE_CHECKING, Union
 from typing import Tuple
+from uuid import UUID
 
 import duckdb
 import pytz
@@ -155,8 +156,8 @@ _IMG_TYPE_SIZES_HWC: dict[ScryfallImageType, Tuple[int, int, int] | None] = {
 @dataclasses.dataclass(frozen=True)
 class ScryfallCardFace:
     # query
-    id: str
-    oracle_id: str
+    id: Union[str, UUID]
+    oracle_id: Union[str, UUID]
     name: str
     set_code: str
     set_name: str
@@ -176,8 +177,15 @@ class ScryfallCardFace:
         return ScryfallBulkType(self._bulk_type)
 
     @property
+    def uuid(self):
+        if isinstance(self.id, str):
+            return UUID(self.id)
+        else:
+            return self.id
+
+    @property
     def img_path(self) -> Path:
-        return self._sets_dir / f"{self.set_code}/{self.id}.{self.img_type.extension}"
+        return self._sets_dir / f"{self.set_code}/{self.uuid}.{self.img_type.extension}"
 
     @property
     def url_path_pair(self) -> Tuple[str, str]:
@@ -528,7 +536,7 @@ class ScryfallDataset:
             self._ondemand_dl = download_mode == "ondemand"
             self._cards = list(self._ds.yield_all())
         # sort cards
-        self._cards.sort(key=lambda x: x.id)
+        self._cards.sort(key=lambda x: x.uuid)
         # init
         self.transform = transform if transform else _noop
 
