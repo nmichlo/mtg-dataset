@@ -345,6 +345,9 @@ class ScryfallCardFaceDatasetManager:
         self.__ds_dir = ds_dir
         self.__path_index = ds_dir / "index.json"
         self.__path_bulk = ds_dir / "bulk.json"
+        self.__path_cards = ds_dir / "cards.ddb"
+        self.__cards_conn = None
+        self.__len = None
 
     @property
     def data_root(self) -> Path:
@@ -366,11 +369,10 @@ class ScryfallCardFaceDatasetManager:
 
     @property
     def bulk_date(self) -> str:
-        index, _ = self._download_bulk_data()
+        index, _, _, _ = self._download_bulk_data_and_generate()
         date = index.bulk_data["updated_at"]
-        return datetime.fromisoformat(date).strftime(
-            "%Y%m%d%H%M%S"
-        )  # same as in bulk filename
+        # same as in bulk filename
+        return datetime.fromisoformat(date).strftime("%Y%m%d%H%M%S")
 
     # ~=~=~ DB ~=~=~
 
@@ -393,50 +395,62 @@ class ScryfallCardFaceDatasetManager:
             }
             json.dump(dat, fp)
 
-    # ~=~=~ bulk data ~=~=~
+    # ~=~=~ generated data ~=~=~
 
     def invalidate_cache(self) -> "ScryfallCardFaceDatasetManager":
         self.__path_index.unlink(missing_ok=True)
         self.__path_bulk.unlink(missing_ok=True)
+        self.__path_cards.unlink(missing_ok=True)
+        if self.__cards_conn is not None:
+            self.__cards_conn.close()
+        self.__cards_conn = None
         return self
 
-    # ~=~=~ bulk data ~=~=~
-
-    def _download_bulk_data(self) -> Tuple[_DatasetIndex, Path]:
+    def _download_bulk_data_and_generate(
+        self,
+    ) -> Tuple[_DatasetIndex, Path, Path, duckdb.DuckDBPyConnection]:
         index = self.__read_index()
         # stale / non-existent
+        generate = False
         if index is None or index.is_stale():
             new_index = _DatasetIndex.from_query(self._bulk_type)
-            # if bulk info is different, then download
+            # if bulk info is different, then download & re-generate
             if (index is None) or (index.bulk_data != new_index.bulk_data):
+                # 1. download bulk data
                 io_download(
                     src_url=new_index.bulk_data["download_uri"],
                     dst_path=str(self.__path_bulk),
                     exists_mode="overwrite",
                 )
+                # 2. generate cards data
+                generate = True
+            # only update the index AFTER downloading in case of failure
             self.__update_index(new_index)
             index = new_index
+        # generate cards data
+        if generate or not self.__path_cards.exists():
+            if self.__cards_conn is not None:
+                self.__cards_conn.close()
+            self._regenerate_cards_data()
+        if self.__cards_conn is None:
+            self.__cards_conn = duckdb.connect(self.__path_cards)
         # done
         assert index
         assert self.__path_bulk.exists()
-        return index, self.__path_bulk
+        assert self.__path_cards.exists()
+        return index, self.__path_bulk, self.__path_cards, self.__cards_conn
 
-    # ~=~=~ yield card faces ~=~=~
-
-    def __repr__(self):
-        return f"<ScryfallDataset: {self.bulk_date}, {self.bulk_type}+{self.img_type}>"
-
-    def __iter__(self) -> Iterator["ScryfallCardFace"]:
-        return self.yield_all()
-
-    def yield_all(
-        self, shared_proxy: ProxyDownloader | None = None
-    ) -> Iterator["ScryfallCardFace"]:
-        # fetch the bulk data
-        _, path_bulk = self._download_bulk_data()
+    def _regenerate_cards_data(self) -> None:
+        assert self.__path_bulk.exists()
+        # delete existing cards data
+        if self.__path_cards.exists():
+            self.__path_cards.unlink()
+        # generate query
         img_type = self._img_type.value
         bulk_type = self._bulk_type.value
+        path_bulk = str(self.__path_bulk)
         query = f"""
+            CREATE OR REPLACE TABLE cards AS
             SELECT
                 t.id,
                 t.oracle_id,
@@ -453,15 +467,65 @@ class ScryfallCardFaceDatasetManager:
                 (t.card_faces[1].image_uris.{img_type}),
                 (t.card_faces[2].image_uris.{img_type})
             ) AS img(image_uri)
-            WHERE img.image_uri IS NOT NULL;
+            WHERE img.image_uri IS NOT NULL
+            ORDER BY t.id;
+            -- create index
+            CREATE INDEX idx_id ON cards(id);
         """
-        cursor = duckdb.sql(query)
+        # run query saving the duckdb file
+        db = duckdb.connect(self.__path_cards)
+        db.execute(query)
+        db.close()
+
+    # ~=~=~ yield card faces ~=~=~
+
+    def __repr__(self):
+        return f"<ScryfallDataset: {self.bulk_date}, {self.bulk_type}+{self.img_type}>"
+
+    def __len__(self):
+        if self.__len is None:
+            _, _, _, conn = self._download_bulk_data_and_generate()
+            self.__len = conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
+        return self.__len
+
+    def __iter__(self) -> Iterator["ScryfallCardFace"]:
+        return self.yield_all()
+
+    def get_by_id(self, id: Union[str, UUID]) -> "ScryfallCardFace":
+        _, _, _, conn = self._download_bulk_data_and_generate()
+        row = conn.execute(f"SELECT * FROM cards WHERE id = '{id}'").fetchone()
+        if row is None:
+            raise KeyError(f"card not found: {id}")
+        return ScryfallCardFace(*row, _sets_dir=self.__ds_dir / "sets", _proxy=None)
+
+    def yield_all_ids(self) -> Iterator[Union[str]]:
+        _, _, _, conn = self._download_bulk_data_and_generate()
+        cursor = conn.execute("SELECT id FROM cards ORDER BY id")
         while True:
-            row = cursor.fetchone()
-            if row is None:
+            rows = cursor.fetchmany(size=64)
+            if not rows:
                 break
-            yield ScryfallCardFace(
-                *row, _sets_dir=self.__ds_dir / "sets", _proxy=shared_proxy
+            yield from (row[0] for row in rows)
+
+    def yield_all(
+        self,
+        shared_proxy: ProxyDownloader | None = None,
+        *,
+        fetch_count: int = 64,
+    ) -> Iterator["ScryfallCardFace"]:
+        # fetch the bulk data
+        _, _, _, conn = self._download_bulk_data_and_generate()
+        # select * from cards
+        cursor = conn.execute("SELECT * FROM cards ORDER BY id")
+        while True:
+            rows = cursor.fetchmany(size=fetch_count)
+            if not rows:
+                break
+            yield from (
+                ScryfallCardFace(
+                    *row, _sets_dir=self.__ds_dir / "sets", _proxy=shared_proxy
+                )
+                for row in rows
             )
 
     def download_all(
@@ -531,12 +595,12 @@ class ScryfallDataset:
         # fetch cards
         if download_mode == "now":
             self._ondemand_dl = False
-            self._cards = self._ds.download_all()
+            self._ds.download_all()
         else:
             self._ondemand_dl = download_mode == "ondemand"
-            self._cards = list(self._ds.yield_all())
-        # sort cards
-        self._cards.sort(key=lambda x: x.uuid)
+        # cards
+        self._cards = []  # lazily filled as needed
+        self._cards_iter = iter(self._ds)
         # init
         self.transform = transform if transform else _noop
 
@@ -545,9 +609,14 @@ class ScryfallDataset:
         return self._ds
 
     def __len__(self):
-        return len(self._cards)
+        return len(self._ds)
+
+    def get_card_by_id(self, id: Union[str, UUID]) -> ScryfallCardFace:
+        return self._ds.get_by_id(id)
 
     def __getitem__(self, item: int) -> ScryfallCardFace:
+        while item >= len(self._cards):
+            self._cards.append(next(self._cards_iter))
         card = self._cards[item]
         if self._ondemand_dl:
             card.download()
