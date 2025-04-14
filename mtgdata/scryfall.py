@@ -582,6 +582,7 @@ class ScryfallDataset:
         data_root: Path | str | None = None,
         force_update: bool = False,
         download_mode: Literal["now", "ondemand", "none"] = "now",
+        proxy: ProxyDownloader | None = None,
     ):
         # create dataset
         self._ds = ScryfallCardFaceDatasetManager(
@@ -594,13 +595,18 @@ class ScryfallDataset:
             self._ds.invalidate_cache()
         # fetch cards
         if download_mode == "now":
+            self._proxy = proxy or ProxyDownloader()
             self._ondemand_dl = False
-            self._ds.download_all()
+            self._ds.download_all(proxy=self._proxy)
+        elif download_mode == "ondemand":
+            self._proxy = proxy or ProxyDownloader()
+            self._ondemand_dl = True
         else:
-            self._ondemand_dl = download_mode == "ondemand"
+            self._proxy = proxy
+            self._ondemand_dl = False
         # cards
-        self._cards = []  # lazily filled as needed
-        self._cards_iter = iter(self._ds)
+        self._cards: list[ScryfallCardFace] = []  # lazily filled as needed
+        self._cards_iter = self._ds.yield_all(shared_proxy=self._proxy)
         # init
         self.transform = transform if transform else _noop
 
@@ -619,7 +625,7 @@ class ScryfallDataset:
             self._cards.append(next(self._cards_iter))
         card = self._cards[item]
         if self._ondemand_dl:
-            card.download()
+            card.download(proxy=self._proxy)
         return self.transform(card)
 
     def __iter__(self) -> Iterator[ScryfallCardFace]:
