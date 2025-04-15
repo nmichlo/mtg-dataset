@@ -349,6 +349,22 @@ class ScryfallCardFaceDatasetManager:
         self.__cards_conn = None
         self.__len = None
 
+    def get_path_bulk(self) -> Path:
+        _, path, _, _ = self._download_bulk_data_and_generate()
+        return path
+
+    def yield_raw_info(self):
+        try:
+            import ijson
+        except ImportError:
+            raise ImportError(
+                "ijson is not installed, please install it using: `pip install ijson`"
+            )
+        path = self.get_path_bulk()
+        with open(path, "r") as fp:
+            for item in ijson.items(fp, "item"):
+                yield item
+
     @property
     def data_root(self) -> Path:
         # all datasets
