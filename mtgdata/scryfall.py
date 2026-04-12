@@ -57,6 +57,44 @@ logger = logging.getLogger(__name__)
 
 
 # ========================================================================= #
+# Windows-safe path helpers                                                 #
+# ========================================================================= #
+
+
+# Windows-reserved device names (case-insensitive).
+# Cannot be used as file/directory names on Windows with any extension.
+_WINDOWS_RESERVED = frozenset({
+    "con", "prn", "aux", "nul",
+    *(f"com{i}" for i in range(10)),
+    *(f"lpt{i}" for i in range(10)),
+})
+
+# Characters illegal in Windows filenames/paths (excluding path separators).
+_WINDOWS_ILLEGAL_CHARS = frozenset(r'<>:"/\|?*')
+
+
+def _safe_name(name: str) -> str:
+    """
+    Return a filesystem-safe version of *name* for use as a single path
+    component (directory or file name, no separators).
+
+    Applied consistently on all platforms so that dataset paths are identical
+    cross-platform (Linux/macOS datasets remain compatible with Windows):
+      - Strips characters illegal in Windows filenames.
+      - Strips leading/trailing spaces and trailing dots (Windows rule).
+      - Appends '_' to Windows reserved device names (e.g. 'con' → 'con_').
+    """
+    # strip illegal characters and control chars
+    cleaned = "".join(c for c in name if c not in _WINDOWS_ILLEGAL_CHARS and ord(c) >= 0x20)
+    # strip leading/trailing spaces and trailing dots
+    cleaned = cleaned.strip().rstrip(".")
+    # append underscore to Windows reserved names
+    if cleaned.lower() in _WINDOWS_RESERVED:
+        cleaned = cleaned + "_"
+    return cleaned or "_"  # never return empty string
+
+
+# ========================================================================= #
 # Dataset - Vars                                                            #
 # ========================================================================= #
 
@@ -185,7 +223,7 @@ class ScryfallCardFace:
 
     @property
     def img_path(self) -> Path:
-        return self._sets_dir / f"{self.set_code}/{self.uuid}.{self.img_type.extension}"
+        return self._sets_dir / _safe_name(self.set_code) / f"{self.uuid}.{self.img_type.extension}"
 
     @property
     def url_path_pair(self) -> Tuple[str, str]:
