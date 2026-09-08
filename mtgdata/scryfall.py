@@ -117,6 +117,14 @@ def _safe_name(name: str) -> str:
 CACHE_STALE_AFTER = timedelta(days=365)
 
 
+def _cpu_count() -> int:
+    """
+    `os.cpu_count()` returns `None` when the count is undeterminable, which
+    makes every arithmetic default built from it a latent `TypeError`.
+    """
+    return os.cpu_count() or 1
+
+
 # ========================================================================= #
 # Scryfall API Helper                                                       #
 # ========================================================================= #
@@ -580,7 +588,7 @@ class ScryfallCardFaceDatasetManager:
     def download_all(
         self,
         proxy: ProxyDownloader | None = None,
-        threads: int = max(os.cpu_count() * 2, 8),
+        threads: int = max(_cpu_count() * 2, 8),
         verbose: bool = True,
     ) -> list["ScryfallCardFace"]:
         cards_list = []
@@ -727,7 +735,7 @@ def _make_parser_scryfall_prepare(parser=None):
         "-t",
         "--download_threads",
         type=int,
-        default=max(os.cpu_count() * 2, 128),
+        default=max(_cpu_count() * 2, 128),
         help="number of threads to use when downloading files",
     )
     return parser

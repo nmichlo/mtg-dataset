@@ -39,6 +39,7 @@ from mtgdata.scryfall import ScryfallBulkType
 from mtgdata.scryfall import ScryfallCardFace
 from mtgdata.scryfall import ScryfallDataset
 from mtgdata.scryfall import ScryfallImageType
+from mtgdata.scryfall import _cpu_count
 from mtgdata.util import Hdf5Dataset
 
 logger = logging.getLogger(__name__)
@@ -114,7 +115,7 @@ def dataset_save_as_hdf5(
     obs_shape: Tuple[int, int, int],  # (H, W, C) usually
     save_path: Path | str,
     batch_size: int = 64,
-    num_workers: int = os.cpu_count(),
+    num_workers: int = _cpu_count(),
     overwrite: bool = False,
     compression_lvl: int = 4,
 ):
@@ -262,10 +263,10 @@ def generate_converted_dataset(
     save_overwrite: bool = True,
     # image download settings
     imgs_force_update: bool = False,
-    imgs_download_threads: int = os.cpu_count() * 2,
+    imgs_download_threads: int = _cpu_count() * 2,
     # conversion settings
     convert_batch_size: int = 128,
-    convert_num_workers: int = os.cpu_count() // 2,
+    convert_num_workers: int = _cpu_count() // 2,
     convert_speed_test: bool = False,
 ) -> Tuple[Path, Path]:
     if out_obs_size_wh is None:
@@ -398,7 +399,7 @@ def _make_parser_scryfall_convert(parser=None):
     parser.add_argument(
         "--num-workers",
         type=int,
-        default=max(os.cpu_count() // 2, 1),
+        default=max(_cpu_count() // 2, 1),
         help="number of workers to use when processing the dataset",
     )
     parser.add_argument(
