@@ -44,6 +44,11 @@ dependencies = [
 # extra dependencies
 [project.optional-dependencies]
 
+# `ScryfallCardFaceDatasetManager.yield_raw_info` streams the bulk json.
+raw = [
+    "ijson",
+]
+
 convert = [
     # dataset conversion
     "h5py",
@@ -88,7 +93,7 @@ force-single-line = true
 
 # ty runs as a pre-commit hook and gates CI. it needs the dependencies resolvable
 # and auto-detects `.venv`, so create one first:
-#     uv venv --python 3.11 .venv && uv pip install --python .venv -e ".[convert]"
+#     uv venv --python 3.11 .venv && uv pip install --python .venv -e ".[convert,raw]"
 #     uvx ty check
 
 [tool.ty.environment]

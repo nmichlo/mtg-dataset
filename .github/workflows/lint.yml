@@ -20,7 +20,7 @@ jobs:
       - name: Install project into .venv
         run: |
           uv venv --python 3.11 .venv
-          uv pip install --python .venv -e ".[convert]"
+          uv pip install --python .venv -e ".[convert,raw]"
 
       - name: Run pre-commit
         run: uvx --from pre-commit pre-commit run --all-files --show-diff-on-failure
