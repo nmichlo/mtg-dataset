@@ -32,15 +32,37 @@ __all__ = (
     "generate_converted_dataset",
 )
 
-from mtgdata.scryfall import (
-    ScryfallDataset,
-    ScryfallCardFaceDatasetManager,
-    ScryfallImageType,
-    ScryfallBulkType,
-)
-from mtgdata.util.hdf5 import Hdf5Dataset
+import importlib
+from typing import TYPE_CHECKING
 
-from mtgdata.scryfall_convert import dataset_save_as_hdf5
+# base dependencies only -- safe to import eagerly
+from mtgdata.scryfall import ScryfallBulkType
+from mtgdata.scryfall import ScryfallCardFaceDatasetManager
+from mtgdata.scryfall import ScryfallDataset
+from mtgdata.scryfall import ScryfallImageType
 
-# from mtgdata.scryfall_convert import dataset_save_meta
-from mtgdata.scryfall_convert import generate_converted_dataset
+if TYPE_CHECKING:
+    from mtgdata.scryfall_convert import dataset_save_as_hdf5
+    from mtgdata.scryfall_convert import generate_converted_dataset
+    from mtgdata.util.hdf5 import Hdf5Dataset
+
+# these names pull in h5py, numpy, tqdm and torch, which live behind the
+# `[convert]` extra. importing them here would make a plain
+# `pip install mtgdata` unusable -- even `import mtgdata` would raise.
+_LAZY_CONVERT = {
+    "Hdf5Dataset": "mtgdata.util.hdf5",
+    "NumpyDataset": "mtgdata.util.hdf5",
+    "dataset_save_as_hdf5": "mtgdata.scryfall_convert",
+    "generate_converted_dataset": "mtgdata.scryfall_convert",
+}
+
+
+def __getattr__(name: str) -> object:
+    module = _LAZY_CONVERT.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(importlib.import_module(module), name)
+
+
+def __dir__() -> list:
+    return sorted({*__all__, *_LAZY_CONVERT})
