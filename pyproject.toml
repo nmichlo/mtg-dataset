@@ -80,3 +80,19 @@ force-single-line = true
 # `__init__.py` files are re-export hubs -- unsorted and "unused" imports are the point.
 "**/__init__.py" = ["F401", "I001"]
 
+
+
+# ========================================================================= #
+# TY                                                                        #
+# ========================================================================= #
+
+# ty runs as a pre-commit hook and gates CI. it needs the dependencies resolvable
+# and auto-detects `.venv`, so create one first:
+#     uv venv --python 3.11 .venv && uv pip install --python .venv -e ".[convert]"
+#     uvx ty check
+
+[tool.ty.environment]
+python-version = "3.11"
+
+[tool.ty.src]
+exclude = ["data"]

@@ -19,3 +19,10 @@ repos:
         args: ["--fix"]
       - id: ruff-format
 
+
+  - repo: https://github.com/astral-sh/ty-pre-commit
+    rev: v0.0.79
+    hooks:
+      # `ty` needs the project dependencies resolvable. it auto-detects `.venv`,
+      # so create one first: `uv venv --python 3.11 && uv pip install -e ".[convert]"`
+      - id: ty
