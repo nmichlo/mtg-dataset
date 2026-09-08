@@ -55,7 +55,7 @@ class PilResizeNumpyTransform(object):
         self,
         resize: Tuple[int, int] | None = None,
         assert_shape: Tuple[int, int, int] | None = None,
-        assert_dtype: np.dtype | None = None,
+        assert_dtype: np.dtype | type[np.generic] | None = None,
         transpose: bool = True,
         pad_to_square: bool = False,
     ):
@@ -65,40 +65,41 @@ class PilResizeNumpyTransform(object):
         self._transpose = transpose
         self._pad_to_square = pad_to_square
 
-    def __call__(self, img: "Image.Image"):
+    def __call__(self, img: "Image.Image") -> np.ndarray:
         # resize
         if self._resize is not None:
             if img.size != self._resize:
                 img = img.resize(self._resize)
-        # convert to numpy
-        img = np.asarray(img)
+        # convert to numpy -- `arr` is a separate name from `img` so the PIL
+        # image and the array it becomes never share one variable
+        arr = np.asarray(img)
         # check RGB
-        assert img.ndim == 3, f"expected 3 dimensions, got: {img.ndim}"
-        assert img.shape[-1] == 3, f"expected 3 channels, got: {img.shape[-1]}"
+        assert arr.ndim == 3, f"expected 3 dimensions, got: {arr.ndim}"
+        assert arr.shape[-1] == 3, f"expected 3 channels, got: {arr.shape[-1]}"
         # check shapes
         if self._assert_shape is not None:
-            assert img.shape == self._assert_shape, f"expected shape: {self._assert_shape}, got: {img.shape}"
+            assert arr.shape == self._assert_shape, f"expected shape: {self._assert_shape}, got: {arr.shape}"
         if self._assert_dtype is not None:
-            assert img.dtype == self._assert_dtype, f"expected dtype: {self._assert_dtype}, got: {img.dtype}"
+            assert arr.dtype == self._assert_dtype, f"expected dtype: {self._assert_dtype}, got: {arr.dtype}"
         # pad to a square
         if self._pad_to_square:
-            H, W, C = img.shape
+            H, W, C = arr.shape
             pad_h = (max(H, W) - H) / 2
             pad_w = (max(H, W) - W) / 2
-            img = np.pad(
-                img,
+            arr = np.pad(
+                arr,
                 [
                     (int(np.floor(pad_h)), int(np.ceil(pad_h))),
                     (int(np.floor(pad_w)), int(np.ceil(pad_w))),
                     (0, 0),
                 ],
             )
-            assert img.shape[0] == img.shape[1] == max(H, W)
+            assert arr.shape[0] == arr.shape[1] == max(H, W)
         # transpose
         if self._transpose:
-            img = np.moveaxis(img, -1, -3)
+            arr = np.moveaxis(arr, -1, -3)
         # return values
-        return img
+        return arr
 
 
 # ========================================================================= #
