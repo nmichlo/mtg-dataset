@@ -16,15 +16,13 @@ name = "mtgdata"
 dynamic = ["version"]  # Version is managed by setuptools_scm
 description = "MTG image dataset with automatic image scraping and conversion."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "Nathan Juraj Michlo", email = "NathanJMichlo@gmail.com" }]
 urls = { Homepage = "https://github.com/nmichlo/mtg-dataset" }
 classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -65,7 +63,7 @@ convert = [
 
 [tool.ruff]
 line-length = 120
-target-version = "py39"
+target-version = "py311"
 
 [tool.ruff.lint]
 # `E4/E7/E9 + F` is the ruff default, `I` adds import sorting (previously isort).
