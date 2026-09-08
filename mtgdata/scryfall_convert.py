@@ -155,7 +155,10 @@ def dataset_save_as_hdf5(
         )
         # dataloader
         loader = DataLoader(
-            dataset,
+            # `ScryfallDataset` deliberately does not subclass `torch.utils.data.Dataset`,
+            # which would make torch a base dependency rather than a `[convert]` extra.
+            # `DataLoader` only needs `__getitem__` and `__len__`, both of which it has.
+            dataset,  # ty: ignore[invalid-argument-type]
             batch_size=batch_size,
             num_workers=num_workers,
             drop_last=False,

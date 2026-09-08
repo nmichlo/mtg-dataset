@@ -385,9 +385,9 @@ class ScryfallCardFaceDatasetManager:
         if ds_dir is None:
             ds_dir = Path(data_root) / "scryfall" / self._bulk_type.value / self._img_type.value
         else:
+            ds_dir = Path(ds_dir)
             if ds_dir.is_absolute():
                 warnings.warn("ds_dir is an absolute path, ignoring data_root")
-                ds_dir = Path(ds_dir)
                 data_root = ds_dir  # unknown
             else:
                 ds_dir = data_root / ds_dir
@@ -465,7 +465,10 @@ class ScryfallCardFaceDatasetManager:
                 "bulk_data": index.bulk_data,
                 "last_updated": index.last_updated.isoformat(),
             }
-            json.dump(dat, fp)
+            # `AtomicOpen` is annotated `TextIO | BinaryIO` whatever the mode, so the
+            # checker cannot see that `"w"` gives a text handle. drop this once
+            # doorway overloads `AtomicOpen` on its mode argument.
+            json.dump(dat, fp)  # ty: ignore[invalid-argument-type]
 
     # ~=~=~ generated data ~=~=~
 
@@ -557,7 +560,9 @@ class ScryfallCardFaceDatasetManager:
     def __len__(self):
         if self.__len is None:
             _, _, _, conn = self._download_bulk_data_and_generate()
-            self.__len = conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
+            row = conn.execute("SELECT COUNT(*) FROM cards").fetchone()
+            assert row is not None, "SELECT COUNT(*) always returns exactly one row"
+            self.__len = row[0]
         return self.__len
 
     def __iter__(self) -> Iterator["ScryfallCardFace"]:
