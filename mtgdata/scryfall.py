@@ -252,7 +252,7 @@ class ScryfallCardFace:
     def url_path_pair(self) -> Tuple[str, str]:
         return self.img_uri, str(self.img_path)
 
-    def download(self, *, verbose: bool = True, proxy: ProxyDownloader = None) -> Path:
+    def download(self, *, verbose: bool = True, proxy: ProxyDownloader | None = None) -> Path:
         proxy = proxy or self._proxy
         if proxy is None:
             if self.img_path.exists():
@@ -269,7 +269,7 @@ class ScryfallCardFace:
         )
         return self.img_path
 
-    def dl_and_open_im(self, *, verbose: bool = True, proxy: ProxyDownloader = None) -> "Image.Image":
+    def dl_and_open_im(self, *, verbose: bool = True, proxy: ProxyDownloader | None = None) -> "Image.Image":
         try:
             from PIL import Image
         except ImportError:
@@ -286,7 +286,7 @@ class ScryfallCardFace:
         resize_mode: Literal["resize", "error", "skip"] = "resize",
         *,
         verbose: bool = True,
-        proxy: ProxyDownloader = None,
+        proxy: ProxyDownloader | None = None,
     ) -> "Image.Image":
         img = self.dl_and_open_im(verbose=verbose, proxy=proxy)
         if channel_mode == "rgb":
@@ -634,7 +634,7 @@ class ScryfallDataset:
         img_type: ScryfallImageType = ScryfallImageType.small,
         bulk_type: ScryfallBulkType = ScryfallBulkType.default_cards,
         *,
-        transform: Callable[[ScryfallCardFace], Any] = None,
+        transform: Callable[[ScryfallCardFace], Any] | None = None,
         ds_dir: Path | str | None = None,
         data_root: Path | str | None = None,
         force_update: bool = False,

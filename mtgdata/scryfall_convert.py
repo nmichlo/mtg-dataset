@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 class PilResizeNumpyTransform(object):
     def __init__(
         self,
-        resize: Tuple[int, int] = None,
+        resize: Tuple[int, int] | None = None,
         assert_shape: Tuple[int, int, int] | None = None,
         assert_dtype: np.dtype | None = None,
         transpose: bool = True,
