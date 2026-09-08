@@ -138,3 +138,8 @@ data/
 /lightning_logs/
 *.zip
 *.db
+
+# Claude Code
+CLAUDE.md
+CLAUDE.local.md
+.claude/
