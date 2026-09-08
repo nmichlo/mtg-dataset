@@ -22,26 +22,24 @@
 #  SOFTWARE.
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 
+import logging
 import os
 import warnings
-import logging
 from pathlib import Path
-from typing import Optional, TypeVar
+from typing import Optional
 from typing import Tuple
+from typing import TypeVar
 
 import h5py
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
-from mtgdata.scryfall import (
-    ScryfallBulkType,
-    ScryfallImageType,
-    ScryfallDataset,
-    ScryfallCardFace,
-)
+from mtgdata.scryfall import ScryfallBulkType
+from mtgdata.scryfall import ScryfallCardFace
+from mtgdata.scryfall import ScryfallDataset
+from mtgdata.scryfall import ScryfallImageType
 from mtgdata.util import Hdf5Dataset
-
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +76,9 @@ class PilResizeNumpyTransform(object):
         assert img.shape[-1] == 3, f"expected 3 channels, got: {img.shape[-1]}"
         # check shapes
         if self._assert_shape is not None:
-            assert img.shape == self._assert_shape, (
-                f"expected shape: {self._assert_shape}, got: {img.shape}"
-            )
+            assert img.shape == self._assert_shape, f"expected shape: {self._assert_shape}, got: {img.shape}"
         if self._assert_dtype is not None:
-            assert img.dtype == self._assert_dtype, (
-                f"expected dtype: {self._assert_dtype}, got: {img.dtype}"
-            )
+            assert img.dtype == self._assert_dtype, f"expected dtype: {self._assert_dtype}, got: {img.dtype}"
         # pad to a square
         if self._pad_to_square:
             H, W, C = img.shape
@@ -131,9 +125,7 @@ def dataset_save_as_hdf5(
     try:
         from torch.utils.data import DataLoader
     except ImportError:
-        raise ImportError(
-            "torch is not installed. Please install it via `pip install torch`"
-        )
+        raise ImportError("torch is not installed. Please install it via `pip install torch`")
 
     save_path = Path(save_path)
     # defaults & checks
@@ -142,9 +134,7 @@ def dataset_save_as_hdf5(
     # skip if exists
     if not overwrite:
         if os.path.exists(save_path):
-            logger.info(
-                f"dataset already exists and overwriting is not enabled, skipping: {repr(save_path)}"
-            )
+            logger.info(f"dataset already exists and overwriting is not enabled, skipping: {repr(save_path)}")
             return
     # open file
     with h5py.File(save_path, "w", libver="earliest") as f:
@@ -308,24 +298,16 @@ def generate_converted_dataset(
     )
 
     if height / width != 1.4:
-        warnings.warn(
-            f"Aspect ratio of height/width is not 1.4, given: {height}x{width} which gives {height / width}"
-        )
+        warnings.warn(f"Aspect ratio of height/width is not 1.4, given: {height}x{width} which gives {height / width}")
     if (out_bulk_type, out_img_type) not in SANE_MODES:
         warnings.warn(
             f"Current combination of bulk and image types might generate a lot of data: {(out_bulk_type, out_img_type)} consider instead one of: {sorted(SANE_MODES)}"
         )
     if (height > out_img_type.height) or (width > out_img_type.width):
-        warnings.warn(
-            f"images are being unscaled from input size of: {out_img_type.size} to: {(width, height)}"
-        )
+        warnings.warn(f"images are being unscaled from input size of: {out_img_type.size} to: {(width, height)}")
 
     # get the shape of the images in the dataset (without padding)
-    data_shape = (
-        (len(dataset), 3, height, width)
-        if out_obs_channels_first
-        else (len(dataset), height, width, 3)
-    )
+    data_shape = (len(dataset), 3, height, width) if out_obs_channels_first else (len(dataset), height, width, 3)
     data_shape_str = "x".join(str(d) for d in data_shape)
 
     # get the output observation shape (with padding)
@@ -340,22 +322,16 @@ def generate_converted_dataset(
     save_root = Path(save_root) if save_root else dataset.ds.ds_dir / "converted"
     save_root.mkdir(parents=True, exist_ok=True)
     bt, it = out_bulk_type.replace("_", "-"), out_img_type.replace("_", "-")
-    path_data = (
-        save_root
-        / f"mtg_{bt}-{dataset.ds.bulk_date}_{it}_{data_shape_str}_c{out_obs_compression_lvl}.h5"
-    )
+    path_data = save_root / f"mtg_{bt}-{dataset.ds.bulk_date}_{it}_{data_shape_str}_c{out_obs_compression_lvl}.h5"
     path_meta = (
-        save_root
-        / f"mtg_{bt}-{dataset.ds.bulk_date}_{it}_{data_shape_str}_c{out_obs_compression_lvl}_meta.json"
+        save_root / f"mtg_{bt}-{dataset.ds.bulk_date}_{it}_{data_shape_str}_c{out_obs_compression_lvl}_meta.json"
     )
 
     # check paths
     do_save = True
     if not save_overwrite:
         if os.path.exists(path_data) or os.path.exists(path_meta):
-            logger.warning(
-                f"converted dataset or meta files already exist: {repr(path_data)} or {repr(path_meta)}"
-            )
+            logger.warning(f"converted dataset or meta files already exist: {repr(path_data)} or {repr(path_meta)}")
             do_save = False
 
     # convert the dataset
@@ -399,9 +375,7 @@ def _make_parser_scryfall_convert(parser=None):
 
     _make_parser_scryfall_prepare(parser)
     # extra args
-    parser.add_argument(
-        "-o", "--out-root", type=str, default=None, help="output folder"
-    )
+    parser.add_argument("-o", "--out-root", type=str, default=None, help="output folder")
     parser.add_argument(
         "-s",
         "--size",
@@ -465,9 +439,7 @@ def _run_scryfall_convert(args):
         obs_size_wh = None
     else:
         try:
-            width, height = (
-                None if (v == "?") else int(v) for v in args.size.split("x")
-            )
+            width, height = (None if (v == "?") else int(v) for v in args.size.split("x"))
             obs_size_wh = (width, height)
         except Exception:
             raise ValueError(

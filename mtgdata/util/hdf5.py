@@ -30,7 +30,6 @@ __all__ = [
 import warnings
 from pathlib import Path
 
-
 # ========================================================================= #
 # hdf5 utils                                                                #
 # NOTE: this class is taken from disent -- github.com/nmichlo/disent        #
@@ -67,9 +66,7 @@ class Hdf5Dataset:
     WARNING: this should probably not be used across multiple hosts?
     """
 
-    def __init__(
-        self, h5_path: str | Path, h5_dataset_name: str = "data", transform=None
-    ):
+    def __init__(self, h5_path: str | Path, h5_dataset_name: str = "data", transform=None):
         self._h5_path = Path(h5_path)
         self._h5_dataset_name = h5_dataset_name
         self._hdf5_file, self._hdf5_data = self._make_hdf5()
@@ -79,9 +76,7 @@ class Hdf5Dataset:
         try:
             import h5py
         except ImportError:
-            raise ImportError(
-                "h5py is not installed. Please install it via `pip install h5py`"
-            )
+            raise ImportError("h5py is not installed. Please install it via `pip install h5py`")
         # TODO: can this cause a memory leak if it is never closed?
         hdf5_file = h5py.File(str(self._h5_path), "r", swmr=True)
         hdf5_data = hdf5_file[self._h5_dataset_name]
@@ -106,9 +101,7 @@ class Hdf5Dataset:
     def numpy(self, warn=True):
         if warn:
             if self._transform is not None:
-                warnings.warn(
-                    "Transform is not applied to the data when numpy() is called."
-                )
+                warnings.warn("Transform is not applied to the data when numpy() is called.")
         return self._hdf5_data[:]
 
     def numpy_dataset(self) -> NumpyDataset:

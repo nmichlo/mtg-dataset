@@ -35,18 +35,28 @@ import json
 import logging
 import os
 import warnings
-from datetime import datetime, timedelta
+from datetime import datetime
+from datetime import timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Iterator, Literal, TYPE_CHECKING, Union
+from typing import TYPE_CHECKING
+
+# `Any` is banned by TID251, but the three uses below are honest: two hold the raw
+# Scryfall bulk-data JSON blob, whose shape is the remote API's to define, and one is
+# a user transform's return value, which the caller alone knows the type of.
+from typing import Any  # noqa: TID251
+from typing import Callable
+from typing import Iterator
+from typing import Literal
 from typing import Tuple
+from typing import Union
 from uuid import UUID
 
 import duckdb
 import pytz
 import requests
-
-from doorway import AtomicOpen, io_download
+from doorway import AtomicOpen
+from doorway import io_download
 from doorway.x import ProxyDownloader
 
 if TYPE_CHECKING:
@@ -63,11 +73,16 @@ logger = logging.getLogger(__name__)
 
 # Windows-reserved device names (case-insensitive).
 # Cannot be used as file/directory names on Windows with any extension.
-_WINDOWS_RESERVED = frozenset({
-    "con", "prn", "aux", "nul",
-    *(f"com{i}" for i in range(10)),
-    *(f"lpt{i}" for i in range(10)),
-})
+_WINDOWS_RESERVED = frozenset(
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{i}" for i in range(10)),
+        *(f"lpt{i}" for i in range(10)),
+    }
+)
 
 # Characters illegal in Windows filenames/paths (excluding path separators).
 _WINDOWS_ILLEGAL_CHARS = frozenset(r'<>:"/\|?*')
@@ -246,15 +261,11 @@ class ScryfallCardFace:
         )
         return self.img_path
 
-    def dl_and_open_im(
-        self, *, verbose: bool = True, proxy: ProxyDownloader = None
-    ) -> "Image.Image":
+    def dl_and_open_im(self, *, verbose: bool = True, proxy: ProxyDownloader = None) -> "Image.Image":
         try:
             from PIL import Image
         except ImportError:
-            raise ImportError(
-                "PIL is not installed, please install it using: `pip install pillow`"
-            )
+            raise ImportError("PIL is not installed, please install it using: `pip install pillow`")
 
         return Image.open(self.download(verbose=verbose, proxy=proxy))
 
@@ -274,14 +285,10 @@ class ScryfallCardFace:
             img = img.convert("RGB")
         if self.img_type.size != img.size:
             if resize_mode == "resize":
-                logger.warning(
-                    f"image shape mismatch: {img.size} != {self.img_type.size} {self}"
-                )
+                logger.warning(f"image shape mismatch: {img.size} != {self.img_type.size} {self}")
                 img = img.resize(self.img_type.size)
             elif resize_mode == "error":
-                raise RuntimeError(
-                    f"image shape mismatch: {img.size} != {self.img_type.size} {self}"
-                )
+                raise RuntimeError(f"image shape mismatch: {img.size} != {self.img_type.size} {self}")
             elif resize_mode == "skip":
                 pass
             else:
@@ -358,12 +365,7 @@ class ScryfallCardFaceDatasetManager:
 
         # get ds dir
         if ds_dir is None:
-            ds_dir = (
-                Path(data_root)
-                / "scryfall"
-                / self._bulk_type.value
-                / self._img_type.value
-            )
+            ds_dir = Path(data_root) / "scryfall" / self._bulk_type.value / self._img_type.value
         else:
             if ds_dir.is_absolute():
                 warnings.warn("ds_dir is an absolute path, ignoring data_root")
@@ -395,9 +397,7 @@ class ScryfallCardFaceDatasetManager:
         try:
             import ijson
         except ImportError:
-            raise ImportError(
-                "ijson is not installed, please install it using: `pip install ijson`"
-            )
+            raise ImportError("ijson is not installed, please install it using: `pip install ijson`")
         path = self.get_path_bulk()
         with open(path, "r") as fp:
             for item in ijson.items(fp, "item"):
@@ -575,12 +575,7 @@ class ScryfallCardFaceDatasetManager:
             rows = cursor.fetchmany(size=fetch_count)
             if not rows:
                 break
-            yield from (
-                ScryfallCardFace(
-                    *row, _sets_dir=self.__ds_dir / "sets", _proxy=shared_proxy
-                )
-                for row in rows
-            )
+            yield from (ScryfallCardFace(*row, _sets_dir=self.__ds_dir / "sets", _proxy=shared_proxy) for row in rows)
 
     def download_all(
         self,
@@ -742,9 +737,7 @@ def _run_scryfall_prepare(args):
     if args.data_root is not None:
         os.environ["DATA_ROOT"] = args.data_root
 
-    ds = ScryfallCardFaceDatasetManager(
-        bulk_type=args.bulk_type, img_type=args.img_type
-    )
+    ds = ScryfallCardFaceDatasetManager(bulk_type=args.bulk_type, img_type=args.img_type)
 
     if args.force_update:
         logger.info("Forcing cache update...")
@@ -752,9 +745,7 @@ def _run_scryfall_prepare(args):
 
     logger.info(f"Downloading images for: {args.bulk_type} {args.img_type}")
     all_cards = ds.download_all(threads=args.download_threads, verbose=True)
-    logger.info(
-        f"Finished downloading {len(all_cards)} images for: {args.bulk_type} {args.img_type}"
-    )
+    logger.info(f"Finished downloading {len(all_cards)} images for: {args.bulk_type} {args.img_type}")
 
 
 # ========================================================================= #
