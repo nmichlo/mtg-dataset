@@ -8,11 +8,10 @@ on:
 
 jobs:
   test:
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
         python-version: ["3.12", "3.13"]
 
     steps:
@@ -23,13 +22,18 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
 
+      # a venv rather than `--system`: the runner's python is externally managed
+      # (PEP 668), so `uv pip install --system` refuses to touch it
+      - name: Create venv
+        run: uv venv --python ${{ matrix.python-version }} .venv
+
       # base deps only -- proves the package imports and works without the extras
       - name: Test defaults
         run: |
-          uv pip install --system -e ".[test]"
-          pytest --color=yes --verbose -m 'not extra_test'
+          uv pip install --python .venv -e ".[test]"
+          .venv/bin/pytest --color=yes --verbose -m 'not extra_test'
 
       - name: Test extras
         run: |
-          uv pip install --system -e ".[convert,raw,test]"
-          pytest --color=yes --verbose
+          uv pip install --python .venv -e ".[convert,raw,test]"
+          .venv/bin/pytest --color=yes --verbose
