@@ -151,42 +151,51 @@ class ScryfallImageType(str, Enum):
         return _IMG_TYPE_EXTENSIONS[self]
 
     @property
+    def _size_hwc(self) -> Tuple[int, int, int]:
+        size = _IMG_TYPE_SIZES_HWC[self]
+        if size is None:
+            raise ValueError(
+                f"image type {self.value!r} has no fixed size, its dimensions vary per card. "
+                f"Query the downloaded image instead."
+            )
+        return size
+
+    @property
     def size(self) -> Tuple[int, int] | None:
-        h, w, c = _IMG_TYPE_SIZES_HWC[self]
+        """`None` for `art_crop`, whose dimensions vary per card."""
+        size = _IMG_TYPE_SIZES_HWC[self]
+        if size is None:
+            return None
+        h, w, c = size
         return w, h  # PIL uses (W, H)
 
     @property
     def height(self) -> int:
-        h, w, c = _IMG_TYPE_SIZES_HWC[self]
+        h, w, c = self._size_hwc
         return h
 
     @property
     def width(self) -> int:
-        h, w, c = _IMG_TYPE_SIZES_HWC[self]
+        h, w, c = self._size_hwc
         return w
 
     @property
     def channels(self) -> int:
-        h, w, c = _IMG_TYPE_SIZES_HWC[self]
+        h, w, c = self._size_hwc
         return c
 
     def get_scaled_size(self, width: int | None, height: int | None) -> Tuple[int, int]:
-        if height is None and width is None:
-            out_w = self.width
-            out_h = self.height
-        elif height is None:
-            r = width / self.width
-            out_w = width
-            out_h = max(round(self.height * r), 1)
-        elif width is None:
-            r = height / self.height
-            out_w = max(round(self.width * r), 1)
-            out_h = height
-        else:
-            r = max(width / self.width, height / self.height)
-            out_w = max(round(self.width * r), 1)
-            out_h = max(round(self.height * r), 1)
-        return out_w, out_h
+        h, w, c = self._size_hwc
+        if width is None:
+            if height is None:
+                return w, h
+            r = height / h
+            return max(round(w * r), 1), height
+        if height is None:
+            r = width / w
+            return width, max(round(h * r), 1)
+        r = max(width / w, height / h)
+        return max(round(w * r), 1), max(round(h * r), 1)
 
 
 _IMG_TYPE_EXTENSIONS: dict[ScryfallImageType, Literal["jpg", "png"]] = {
@@ -291,12 +300,13 @@ class ScryfallCardFace:
         img = self.dl_and_open_im(verbose=verbose, proxy=proxy)
         if channel_mode == "rgb":
             img = img.convert("RGB")
-        if self.img_type.size != img.size:
+        expect_size = self.img_type.size
+        if expect_size is not None and expect_size != img.size:
             if resize_mode == "resize":
-                logger.warning(f"image shape mismatch: {img.size} != {self.img_type.size} {self}")
-                img = img.resize(self.img_type.size)
+                logger.warning(f"image shape mismatch: {img.size} != {expect_size} {self}")
+                img = img.resize(expect_size)
             elif resize_mode == "error":
-                raise RuntimeError(f"image shape mismatch: {img.size} != {self.img_type.size} {self}")
+                raise RuntimeError(f"image shape mismatch: {img.size} != {expect_size} {self}")
             elif resize_mode == "skip":
                 pass
             else:
