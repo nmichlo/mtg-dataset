@@ -23,9 +23,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       # a venv rather than `--system`: the runner's python is externally managed
-      # (PEP 668), so `uv pip install --system` refuses to touch it
+      # (PEP 668), so `uv pip install --system` refuses to touch it.
+      # `--clear` because `setup-uv` already creates a `.venv` when it is given a
+      # `python-version`, and `uv venv` refuses to overwrite one.
       - name: Create venv
-        run: uv venv --python ${{ matrix.python-version }} .venv
+        run: uv venv --python ${{ matrix.python-version }} --clear .venv
 
       # base deps only -- proves the package imports and works without the extras
       - name: Test defaults
