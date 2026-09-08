@@ -35,9 +35,11 @@ import json
 import logging
 import os
 import warnings
+from collections.abc import Callable
+from collections.abc import Iterator
 from datetime import datetime
 from datetime import timedelta
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -45,11 +47,7 @@ from typing import TYPE_CHECKING
 # Scryfall bulk-data JSON blob, whose shape is the remote API's to define, and one is
 # a user transform's return value, which the caller alone knows the type of.
 from typing import Any  # noqa: TID251
-from typing import Callable
-from typing import Iterator
 from typing import Literal
-from typing import Tuple
-from typing import Union
 from uuid import UUID
 
 import duckdb
@@ -130,7 +128,7 @@ def _cpu_count() -> int:
 # ========================================================================= #
 
 
-class ScryfallBulkType(str, Enum):
+class ScryfallBulkType(StrEnum):
     oracle_cards = "oracle_cards"
     unique_artwork = "unique_artwork"
     default_cards = "default_cards"
@@ -138,7 +136,7 @@ class ScryfallBulkType(str, Enum):
     rulings = "rulings"
 
 
-class ScryfallImageType(str, Enum):
+class ScryfallImageType(StrEnum):
     small = "small"
     border_crop = "border_crop"
     normal = "normal"
@@ -151,7 +149,7 @@ class ScryfallImageType(str, Enum):
         return _IMG_TYPE_EXTENSIONS[self]
 
     @property
-    def _size_hwc(self) -> Tuple[int, int, int]:
+    def _size_hwc(self) -> tuple[int, int, int]:
         size = _IMG_TYPE_SIZES_HWC[self]
         if size is None:
             raise ValueError(
@@ -161,7 +159,7 @@ class ScryfallImageType(str, Enum):
         return size
 
     @property
-    def size(self) -> Tuple[int, int] | None:
+    def size(self) -> tuple[int, int] | None:
         """`None` for `art_crop`, whose dimensions vary per card."""
         size = _IMG_TYPE_SIZES_HWC[self]
         if size is None:
@@ -184,7 +182,7 @@ class ScryfallImageType(str, Enum):
         h, w, c = self._size_hwc
         return c
 
-    def get_scaled_size(self, width: int | None, height: int | None) -> Tuple[int, int]:
+    def get_scaled_size(self, width: int | None, height: int | None) -> tuple[int, int]:
         h, w, c = self._size_hwc
         if width is None:
             if height is None:
@@ -207,7 +205,7 @@ _IMG_TYPE_EXTENSIONS: dict[ScryfallImageType, Literal["jpg", "png"]] = {
     ScryfallImageType.art_crop: "jpg",
 }
 
-_IMG_TYPE_SIZES_HWC: dict[ScryfallImageType, Tuple[int, int, int] | None] = {
+_IMG_TYPE_SIZES_HWC: dict[ScryfallImageType, tuple[int, int, int] | None] = {
     # aspect ratio ~= 7:5 (H = 1.4 W)
     ScryfallImageType.small: (204, 146, 3),
     ScryfallImageType.border_crop: (680, 480, 3),
@@ -226,8 +224,8 @@ _IMG_TYPE_SIZES_HWC: dict[ScryfallImageType, Tuple[int, int, int] | None] = {
 @dataclasses.dataclass(frozen=True)
 class ScryfallCardFace:
     # query
-    id: Union[str, UUID]
-    oracle_id: Union[str, UUID]
+    id: str | UUID
+    oracle_id: str | UUID
     name: str
     set_code: str
     set_name: str
@@ -258,7 +256,7 @@ class ScryfallCardFace:
         return self._sets_dir / _safe_name(self.set_code) / f"{self.uuid}.{self.img_type.extension}"
 
     @property
-    def url_path_pair(self) -> Tuple[str, str]:
+    def url_path_pair(self) -> tuple[str, str]:
         return self.img_uri, str(self.img_path)
 
     def download(self, *, verbose: bool = True, proxy: ProxyDownloader | None = None) -> Path:
@@ -417,9 +415,8 @@ class ScryfallCardFaceDatasetManager:
         except ImportError:
             raise ImportError("ijson is not installed, please install it using: `pip install ijson`")
         path = self.get_path_bulk()
-        with open(path, "r") as fp:
-            for item in ijson.items(fp, "item"):
-                yield item
+        with open(path) as fp:
+            yield from ijson.items(fp, "item")
 
     @property
     def data_root(self) -> Path:
@@ -483,7 +480,7 @@ class ScryfallCardFaceDatasetManager:
 
     def _download_bulk_data_and_generate(
         self,
-    ) -> Tuple[_DatasetIndex, Path, Path, duckdb.DuckDBPyConnection]:
+    ) -> tuple[_DatasetIndex, Path, Path, duckdb.DuckDBPyConnection]:
         index = self.__read_index()
         # stale / non-existent
         generate = False
@@ -568,14 +565,14 @@ class ScryfallCardFaceDatasetManager:
     def __iter__(self) -> Iterator["ScryfallCardFace"]:
         return self.yield_all()
 
-    def get_by_id(self, id: Union[str, UUID]) -> "ScryfallCardFace":
+    def get_by_id(self, id: str | UUID) -> "ScryfallCardFace":
         _, _, _, conn = self._download_bulk_data_and_generate()
         row = conn.execute(f"SELECT * FROM cards WHERE id = '{id}'").fetchone()
         if row is None:
             raise KeyError(f"card not found: {id}")
         return ScryfallCardFace(*row, _sets_dir=self.__ds_dir / "sets", _proxy=None)
 
-    def yield_all_ids(self) -> Iterator[Union[str]]:
+    def yield_all_ids(self) -> Iterator[str]:
         _, _, _, conn = self._download_bulk_data_and_generate()
         cursor = conn.execute("SELECT id FROM cards ORDER BY id")
         while True:
@@ -689,7 +686,7 @@ class ScryfallDataset:
     def __len__(self):
         return len(self._ds)
 
-    def get_card_by_id(self, id: Union[str, UUID]) -> ScryfallCardFace:
+    def get_card_by_id(self, id: str | UUID) -> ScryfallCardFace:
         return self._ds.get_by_id(id)
 
     def __getitem__(self, item: int) -> ScryfallCardFace:

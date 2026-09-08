@@ -26,9 +26,6 @@ import logging
 import os
 import warnings
 from pathlib import Path
-from typing import Optional
-from typing import Tuple
-from typing import TypeVar
 
 import h5py
 import numpy as np
@@ -50,11 +47,11 @@ logger = logging.getLogger(__name__)
 # ========================================================================= #
 
 
-class PilResizeNumpyTransform(object):
+class PilResizeNumpyTransform:
     def __init__(
         self,
-        resize: Tuple[int, int] | None = None,
-        assert_shape: Tuple[int, int, int] | None = None,
+        resize: tuple[int, int] | None = None,
+        assert_shape: tuple[int, int, int] | None = None,
         assert_dtype: np.dtype | type[np.generic] | None = None,
         transpose: bool = True,
         pad_to_square: bool = False,
@@ -107,13 +104,10 @@ class PilResizeNumpyTransform(object):
 # ========================================================================= #
 
 
-T = TypeVar("T")
-
-
 def dataset_save_as_hdf5(
     dataset: ScryfallDataset,
     *,
-    obs_shape: Tuple[int, int, int],  # (H, W, C) usually
+    obs_shape: tuple[int, int, int],  # (H, W, C) usually
     save_path: Path | str,
     batch_size: int = 64,
     num_workers: int = _cpu_count(),
@@ -257,13 +251,12 @@ def generate_converted_dataset(
     out_img_type: ScryfallImageType = ScryfallImageType.border_crop,
     out_bulk_type: ScryfallBulkType = ScryfallBulkType.default_cards,
     out_obs_compression_lvl: int = 4,
-    out_obs_size_wh: Optional[
-        Tuple[int | None, int | None]
-    ] = None,  # (W, H) -- None is auto computed based on default size.
+    out_obs_size_wh: tuple[int | None, int | None]
+    | None = None,  # (W, H) -- None is auto computed based on default size.
     out_obs_channels_first: bool = False,
     out_obs_pad_to_square: bool = False,
     # save options
-    save_root: Optional[str | Path] = None,
+    save_root: str | Path | None = None,
     save_overwrite: bool = True,
     # image download settings
     imgs_force_update: bool = False,
@@ -272,7 +265,7 @@ def generate_converted_dataset(
     convert_batch_size: int = 128,
     convert_num_workers: int = _cpu_count() // 2,
     convert_speed_test: bool = False,
-) -> Tuple[Path, Path]:
+) -> tuple[Path, Path]:
     if out_obs_size_wh is None:
         out_obs_size_wh = (None, None)
 
