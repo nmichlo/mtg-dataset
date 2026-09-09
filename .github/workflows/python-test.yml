@@ -7,35 +7,18 @@ on:
     branches: ["main", "dev*", "feature*", "fix*"]
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12", "3.13"]
+  # base deps only -- proves the package imports and works without the extras.
+  # kept separate because under the full install these would always pass.
+  defaults:
+    uses: nmichlo/.github/.github/workflows/pytest.yaml@main
+    with:
+      python-versions: '["3.12", "3.13"]'
+      install-extras: "test"
+      pytest-args: "--color=yes --verbose -m 'not extra_test'"
 
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          python-version: ${{ matrix.python-version }}
-
-      # a venv rather than `--system`: the runner's python is externally managed
-      # (PEP 668), so `uv pip install --system` refuses to touch it.
-      # `--clear` because `setup-uv` already creates a `.venv` when it is given a
-      # `python-version`, and `uv venv` refuses to overwrite one.
-      - name: Create venv
-        run: uv venv --python ${{ matrix.python-version }} --clear .venv
-
-      # base deps only -- proves the package imports and works without the extras
-      - name: Test defaults
-        run: |
-          uv pip install --python .venv -e ".[test]"
-          .venv/bin/pytest --color=yes --verbose -m 'not extra_test'
-
-      - name: Test extras
-        run: |
-          uv pip install --python .venv -e ".[convert,raw,test]"
-          .venv/bin/pytest --color=yes --verbose
+  extras:
+    uses: nmichlo/.github/.github/workflows/pytest.yaml@main
+    with:
+      python-versions: '["3.12", "3.13"]'
+      install-extras: "convert,raw,test"
+      pytest-args: "--color=yes --verbose"
