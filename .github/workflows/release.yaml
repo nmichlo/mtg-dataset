@@ -1,0 +1,141 @@
+# Release: version bump, GitHub Release, and PyPI publish.
+#
+# Triggers:
+#   1. PR merged to main  -> compute + push the next tag -> release -> publish
+#   2. Manual tag push    -> release -> publish (no bump, the tag is the version)
+#
+# Why one workflow rather than two:
+#   Tags pushed with GITHUB_TOKEN do not trigger other workflows. The previous
+#   split (version-bump.yaml -> python-publish.yml) could therefore never
+#   publish on a merge -- the bump created the tag, and nothing reacted to it.
+#   Owning both triggers here fixes that without a PAT. A tag this workflow
+#   pushes does not re-enter it, so there is no loop; a tag a human pushes does.
+#
+# Bumping is keyword-driven: put #major, #minor, #patch or #none in the merge
+# commit message. Without one, DEFAULT_BUMP below applies.
+
+name: release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  push:
+    tags: ['v*.*.*']
+
+concurrency:
+  # PRs group by target branch, tag pushes by tag name. Serialises releases so
+  # two merges landing together cannot race for the same version.
+  group: release-${{ github.base_ref || github.ref_name }}
+  # A half-finished release is worse than a queued one.
+  cancel-in-progress: false
+
+jobs:
+  # Only on a real merge. Skipped for tag pushes (the tag is already the version)
+  # and for PRs closed without merging.
+  version-bump:
+    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.vtag.outputs.new_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: "0"  # the action reads history to find the last tag
+
+      - name: Bump version and push tag
+        id: vtag
+        # pinned to 1.71.0
+        uses: anothrNick/github-tag-action@f278d49d30cdd8775cc3e7dd00b5ee11686ee297
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BUMP: "patch"
+          WITH_V: true
+
+  # Single source of the version for everything downstream, from whichever
+  # trigger fired.
+  resolve-version:
+    needs: [version-bump]
+    # always() is required, or this auto-skips whenever version-bump is skipped
+    if: |
+      always() &&
+      (needs.version-bump.result == 'success' ||
+       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')))
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Resolve version
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" == "push" ]; then
+            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ needs.version-bump.outputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Draft, so a failed publish never leaves a visible release pointing at a
+  # version that is not on PyPI.
+  create-release:
+    needs: [resolve-version]
+    if: always() && needs.resolve-version.result == 'success' && needs.resolve-version.outputs.version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create GitHub Release (draft)
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.resolve-version.outputs.version }}
+          draft: true
+          generate_release_notes: true
+
+  publish:
+    needs: [resolve-version, create-release]
+    if: always() && needs.create-release.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      # check out the tag itself, with full history: setuptools_scm derives the
+      # version from the newest reachable tag, so a shallow clone builds 0.0.0
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-version.outputs.version }}
+          fetch-depth: "0"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          python-version: '3.12'
+
+      - name: Build and Publish
+        run: |
+          uv build
+          uv publish --username="__token__" --password="${{ secrets.PYPI_TOKEN }}"
+
+  # Undraft only once the package is actually on PyPI. If publish fails the
+  # draft stays put -- fix the cause and use "Re-run failed jobs".
+  finalize-release:
+    needs: [create-release, publish]
+    if: always() && needs.create-release.result == 'success' && needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish release (undraft)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ needs.create-release.outputs.release_id }},
+              draft: false,
+            });
