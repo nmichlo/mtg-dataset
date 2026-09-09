@@ -35,18 +35,26 @@ import json
 import logging
 import os
 import warnings
-from datetime import datetime, timedelta
-from enum import Enum
+from collections.abc import Callable
+from collections.abc import Iterator
+from datetime import datetime
+from datetime import timedelta
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Callable, Iterator, Literal, TYPE_CHECKING, Union
-from typing import Tuple
+from typing import TYPE_CHECKING
+
+# `Any` is banned by TID251, but the three uses below are honest: two hold the raw
+# Scryfall bulk-data JSON blob, whose shape is the remote API's to define, and one is
+# a user transform's return value, which the caller alone knows the type of.
+from typing import Any  # noqa: TID251
+from typing import Literal
 from uuid import UUID
 
 import duckdb
 import pytz
 import requests
-
-from doorway import AtomicOpen, io_download
+from doorway import AtomicOpen
+from doorway import io_download
 from doorway.x import ProxyDownloader
 
 if TYPE_CHECKING:
@@ -63,11 +71,16 @@ logger = logging.getLogger(__name__)
 
 # Windows-reserved device names (case-insensitive).
 # Cannot be used as file/directory names on Windows with any extension.
-_WINDOWS_RESERVED = frozenset({
-    "con", "prn", "aux", "nul",
-    *(f"com{i}" for i in range(10)),
-    *(f"lpt{i}" for i in range(10)),
-})
+_WINDOWS_RESERVED = frozenset(
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{i}" for i in range(10)),
+        *(f"lpt{i}" for i in range(10)),
+    }
+)
 
 # Characters illegal in Windows filenames/paths (excluding path separators).
 _WINDOWS_ILLEGAL_CHARS = frozenset(r'<>:"/\|?*')
@@ -102,12 +115,20 @@ def _safe_name(name: str) -> str:
 CACHE_STALE_AFTER = timedelta(days=365)
 
 
+def _cpu_count() -> int:
+    """
+    `os.cpu_count()` returns `None` when the count is undeterminable, which
+    makes every arithmetic default built from it a latent `TypeError`.
+    """
+    return os.cpu_count() or 1
+
+
 # ========================================================================= #
 # Scryfall API Helper                                                       #
 # ========================================================================= #
 
 
-class ScryfallBulkType(str, Enum):
+class ScryfallBulkType(StrEnum):
     oracle_cards = "oracle_cards"
     unique_artwork = "unique_artwork"
     default_cards = "default_cards"
@@ -115,7 +136,7 @@ class ScryfallBulkType(str, Enum):
     rulings = "rulings"
 
 
-class ScryfallImageType(str, Enum):
+class ScryfallImageType(StrEnum):
     small = "small"
     border_crop = "border_crop"
     normal = "normal"
@@ -128,42 +149,51 @@ class ScryfallImageType(str, Enum):
         return _IMG_TYPE_EXTENSIONS[self]
 
     @property
-    def size(self) -> Tuple[int, int] | None:
-        h, w, c = _IMG_TYPE_SIZES_HWC[self]
+    def _size_hwc(self) -> tuple[int, int, int]:
+        size = _IMG_TYPE_SIZES_HWC[self]
+        if size is None:
+            raise ValueError(
+                f"image type {self.value!r} has no fixed size, its dimensions vary per card. "
+                f"Query the downloaded image instead."
+            )
+        return size
+
+    @property
+    def size(self) -> tuple[int, int] | None:
+        """`None` for `art_crop`, whose dimensions vary per card."""
+        size = _IMG_TYPE_SIZES_HWC[self]
+        if size is None:
+            return None
+        h, w, c = size
         return w, h  # PIL uses (W, H)
 
     @property
     def height(self) -> int:
-        h, w, c = _IMG_TYPE_SIZES_HWC[self]
+        h, w, c = self._size_hwc
         return h
 
     @property
     def width(self) -> int:
-        h, w, c = _IMG_TYPE_SIZES_HWC[self]
+        h, w, c = self._size_hwc
         return w
 
     @property
     def channels(self) -> int:
-        h, w, c = _IMG_TYPE_SIZES_HWC[self]
+        h, w, c = self._size_hwc
         return c
 
-    def get_scaled_size(self, width: int | None, height: int | None) -> Tuple[int, int]:
-        if height is None and width is None:
-            out_w = self.width
-            out_h = self.height
-        elif height is None:
-            r = width / self.width
-            out_w = width
-            out_h = max(round(self.height * r), 1)
-        elif width is None:
-            r = height / self.height
-            out_w = max(round(self.width * r), 1)
-            out_h = height
-        else:
-            r = max(width / self.width, height / self.height)
-            out_w = max(round(self.width * r), 1)
-            out_h = max(round(self.height * r), 1)
-        return out_w, out_h
+    def get_scaled_size(self, width: int | None, height: int | None) -> tuple[int, int]:
+        h, w, c = self._size_hwc
+        if width is None:
+            if height is None:
+                return w, h
+            r = height / h
+            return max(round(w * r), 1), height
+        if height is None:
+            r = width / w
+            return width, max(round(h * r), 1)
+        r = max(width / w, height / h)
+        return max(round(w * r), 1), max(round(h * r), 1)
 
 
 _IMG_TYPE_EXTENSIONS: dict[ScryfallImageType, Literal["jpg", "png"]] = {
@@ -175,7 +205,7 @@ _IMG_TYPE_EXTENSIONS: dict[ScryfallImageType, Literal["jpg", "png"]] = {
     ScryfallImageType.art_crop: "jpg",
 }
 
-_IMG_TYPE_SIZES_HWC: dict[ScryfallImageType, Tuple[int, int, int] | None] = {
+_IMG_TYPE_SIZES_HWC: dict[ScryfallImageType, tuple[int, int, int] | None] = {
     # aspect ratio ~= 7:5 (H = 1.4 W)
     ScryfallImageType.small: (204, 146, 3),
     ScryfallImageType.border_crop: (680, 480, 3),
@@ -194,8 +224,8 @@ _IMG_TYPE_SIZES_HWC: dict[ScryfallImageType, Tuple[int, int, int] | None] = {
 @dataclasses.dataclass(frozen=True)
 class ScryfallCardFace:
     # query
-    id: Union[str, UUID]
-    oracle_id: Union[str, UUID]
+    id: str | UUID
+    oracle_id: str | UUID
     name: str
     set_code: str
     set_name: str
@@ -226,10 +256,10 @@ class ScryfallCardFace:
         return self._sets_dir / _safe_name(self.set_code) / f"{self.uuid}.{self.img_type.extension}"
 
     @property
-    def url_path_pair(self) -> Tuple[str, str]:
+    def url_path_pair(self) -> tuple[str, str]:
         return self.img_uri, str(self.img_path)
 
-    def download(self, *, verbose: bool = True, proxy: ProxyDownloader = None) -> Path:
+    def download(self, *, verbose: bool = True, proxy: ProxyDownloader | None = None) -> Path:
         proxy = proxy or self._proxy
         if proxy is None:
             if self.img_path.exists():
@@ -246,15 +276,11 @@ class ScryfallCardFace:
         )
         return self.img_path
 
-    def dl_and_open_im(
-        self, *, verbose: bool = True, proxy: ProxyDownloader = None
-    ) -> "Image.Image":
+    def dl_and_open_im(self, *, verbose: bool = True, proxy: ProxyDownloader | None = None) -> "Image.Image":
         try:
             from PIL import Image
         except ImportError:
-            raise ImportError(
-                "PIL is not installed, please install it using: `pip install pillow`"
-            )
+            raise ImportError("PIL is not installed, please install it using: `pip install pillow`")
 
         return Image.open(self.download(verbose=verbose, proxy=proxy))
 
@@ -267,21 +293,18 @@ class ScryfallCardFace:
         resize_mode: Literal["resize", "error", "skip"] = "resize",
         *,
         verbose: bool = True,
-        proxy: ProxyDownloader = None,
+        proxy: ProxyDownloader | None = None,
     ) -> "Image.Image":
         img = self.dl_and_open_im(verbose=verbose, proxy=proxy)
         if channel_mode == "rgb":
             img = img.convert("RGB")
-        if self.img_type.size != img.size:
+        expect_size = self.img_type.size
+        if expect_size is not None and expect_size != img.size:
             if resize_mode == "resize":
-                logger.warning(
-                    f"image shape mismatch: {img.size} != {self.img_type.size} {self}"
-                )
-                img = img.resize(self.img_type.size)
+                logger.warning(f"image shape mismatch: {img.size} != {expect_size} {self}")
+                img = img.resize(expect_size)
             elif resize_mode == "error":
-                raise RuntimeError(
-                    f"image shape mismatch: {img.size} != {self.img_type.size} {self}"
-                )
+                raise RuntimeError(f"image shape mismatch: {img.size} != {expect_size} {self}")
             elif resize_mode == "skip":
                 pass
             else:
@@ -358,16 +381,11 @@ class ScryfallCardFaceDatasetManager:
 
         # get ds dir
         if ds_dir is None:
-            ds_dir = (
-                Path(data_root)
-                / "scryfall"
-                / self._bulk_type.value
-                / self._img_type.value
-            )
+            ds_dir = Path(data_root) / "scryfall" / self._bulk_type.value / self._img_type.value
         else:
+            ds_dir = Path(ds_dir)
             if ds_dir.is_absolute():
                 warnings.warn("ds_dir is an absolute path, ignoring data_root")
-                ds_dir = Path(ds_dir)
                 data_root = ds_dir  # unknown
             else:
                 ds_dir = data_root / ds_dir
@@ -395,13 +413,10 @@ class ScryfallCardFaceDatasetManager:
         try:
             import ijson
         except ImportError:
-            raise ImportError(
-                "ijson is not installed, please install it using: `pip install ijson`"
-            )
+            raise ImportError("ijson is not installed, please install it using: `pip install ijson`")
         path = self.get_path_bulk()
-        with open(path, "r") as fp:
-            for item in ijson.items(fp, "item"):
-                yield item
+        with open(path) as fp:
+            yield from ijson.items(fp, "item")
 
     @property
     def data_root(self) -> Path:
@@ -447,7 +462,10 @@ class ScryfallCardFaceDatasetManager:
                 "bulk_data": index.bulk_data,
                 "last_updated": index.last_updated.isoformat(),
             }
-            json.dump(dat, fp)
+            # `AtomicOpen` is annotated `TextIO | BinaryIO` whatever the mode, so the
+            # checker cannot see that `"w"` gives a text handle. drop this once
+            # doorway overloads `AtomicOpen` on its mode argument.
+            json.dump(dat, fp)  # ty: ignore[invalid-argument-type]
 
     # ~=~=~ generated data ~=~=~
 
@@ -462,7 +480,7 @@ class ScryfallCardFaceDatasetManager:
 
     def _download_bulk_data_and_generate(
         self,
-    ) -> Tuple[_DatasetIndex, Path, Path, duckdb.DuckDBPyConnection]:
+    ) -> tuple[_DatasetIndex, Path, Path, duckdb.DuckDBPyConnection]:
         index = self.__read_index()
         # stale / non-existent
         generate = False
@@ -539,20 +557,22 @@ class ScryfallCardFaceDatasetManager:
     def __len__(self):
         if self.__len is None:
             _, _, _, conn = self._download_bulk_data_and_generate()
-            self.__len = conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
+            row = conn.execute("SELECT COUNT(*) FROM cards").fetchone()
+            assert row is not None, "SELECT COUNT(*) always returns exactly one row"
+            self.__len = row[0]
         return self.__len
 
     def __iter__(self) -> Iterator["ScryfallCardFace"]:
         return self.yield_all()
 
-    def get_by_id(self, id: Union[str, UUID]) -> "ScryfallCardFace":
+    def get_by_id(self, id: str | UUID) -> "ScryfallCardFace":
         _, _, _, conn = self._download_bulk_data_and_generate()
         row = conn.execute(f"SELECT * FROM cards WHERE id = '{id}'").fetchone()
         if row is None:
             raise KeyError(f"card not found: {id}")
         return ScryfallCardFace(*row, _sets_dir=self.__ds_dir / "sets", _proxy=None)
 
-    def yield_all_ids(self) -> Iterator[Union[str]]:
+    def yield_all_ids(self) -> Iterator[str]:
         _, _, _, conn = self._download_bulk_data_and_generate()
         cursor = conn.execute("SELECT id FROM cards ORDER BY id")
         while True:
@@ -575,17 +595,12 @@ class ScryfallCardFaceDatasetManager:
             rows = cursor.fetchmany(size=fetch_count)
             if not rows:
                 break
-            yield from (
-                ScryfallCardFace(
-                    *row, _sets_dir=self.__ds_dir / "sets", _proxy=shared_proxy
-                )
-                for row in rows
-            )
+            yield from (ScryfallCardFace(*row, _sets_dir=self.__ds_dir / "sets", _proxy=shared_proxy) for row in rows)
 
     def download_all(
         self,
         proxy: ProxyDownloader | None = None,
-        threads: int = max(os.cpu_count() * 2, 8),
+        threads: int = max(_cpu_count() * 2, 8),
         verbose: bool = True,
     ) -> list["ScryfallCardFace"]:
         cards_list = []
@@ -631,7 +646,7 @@ class ScryfallDataset:
         img_type: ScryfallImageType = ScryfallImageType.small,
         bulk_type: ScryfallBulkType = ScryfallBulkType.default_cards,
         *,
-        transform: Callable[[ScryfallCardFace], Any] = None,
+        transform: Callable[[ScryfallCardFace], Any] | None = None,
         ds_dir: Path | str | None = None,
         data_root: Path | str | None = None,
         force_update: bool = False,
@@ -671,7 +686,7 @@ class ScryfallDataset:
     def __len__(self):
         return len(self._ds)
 
-    def get_card_by_id(self, id: Union[str, UUID]) -> ScryfallCardFace:
+    def get_card_by_id(self, id: str | UUID) -> ScryfallCardFace:
         return self._ds.get_by_id(id)
 
     def __getitem__(self, item: int) -> ScryfallCardFace:
@@ -732,7 +747,7 @@ def _make_parser_scryfall_prepare(parser=None):
         "-t",
         "--download_threads",
         type=int,
-        default=max(os.cpu_count() * 2, 128),
+        default=max(_cpu_count() * 2, 128),
         help="number of threads to use when downloading files",
     )
     return parser
@@ -742,9 +757,7 @@ def _run_scryfall_prepare(args):
     if args.data_root is not None:
         os.environ["DATA_ROOT"] = args.data_root
 
-    ds = ScryfallCardFaceDatasetManager(
-        bulk_type=args.bulk_type, img_type=args.img_type
-    )
+    ds = ScryfallCardFaceDatasetManager(bulk_type=args.bulk_type, img_type=args.img_type)
 
     if args.force_update:
         logger.info("Forcing cache update...")
@@ -752,9 +765,7 @@ def _run_scryfall_prepare(args):
 
     logger.info(f"Downloading images for: {args.bulk_type} {args.img_type}")
     all_cards = ds.download_all(threads=args.download_threads, verbose=True)
-    logger.info(
-        f"Finished downloading {len(all_cards)} images for: {args.bulk_type} {args.img_type}"
-    )
+    logger.info(f"Finished downloading {len(all_cards)} images for: {args.bulk_type} {args.img_type}")
 
 
 # ========================================================================= #

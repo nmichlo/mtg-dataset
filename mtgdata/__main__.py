@@ -25,11 +25,9 @@
 if __name__ == "__main__":
     import argparse
     import logging
-    from mtgdata.scryfall import _make_parser_scryfall_prepare, _run_scryfall_prepare
-    from mtgdata.scryfall_convert import (
-        _make_parser_scryfall_convert,
-        _run_scryfall_convert,
-    )
+
+    from mtgdata.scryfall import _make_parser_scryfall_prepare
+    from mtgdata.scryfall import _run_scryfall_prepare
 
     # initialise logging
     logging.basicConfig(level=logging.INFO)
@@ -43,17 +41,27 @@ if __name__ == "__main__":
 
     # subcommand: prepare -- add args from scryfall.py
     parser_prepare = parsers.add_parser("prepare")
-    parser_prepare.set_defaults(
-        _run_fn_=_run_scryfall_prepare, _run_msg_=f"{YLW}preparing...{RST}"
-    )
+    parser_prepare.set_defaults(_run_fn_=_run_scryfall_prepare, _run_msg_=f"{YLW}preparing...{RST}")
     _make_parser_scryfall_prepare(parser_prepare)
 
     # subcommand: convert -- add args from scryfall_convert.py
+    # this one needs the `[convert]` extra. it is imported here rather than at the
+    # top so a missing dependency cannot take `prepare` down with it -- `convert`
+    # still lists in `--help` and only fails once it is actually chosen.
     parser_convert = parsers.add_parser("convert")
-    parser_convert.set_defaults(
-        _run_fn_=_run_scryfall_convert, _run_msg_=f"{YLW}converting...{RST}"
-    )
-    _make_parser_scryfall_convert(parser_convert)
+    try:
+        from mtgdata.scryfall_convert import _make_parser_scryfall_convert
+        from mtgdata.scryfall_convert import _run_scryfall_convert
+    except ImportError as err:
+        _convert_unavailable = f"the `convert` subcommand needs: pip install 'mtgdata[convert]' ({err})"
+
+        def _run_scryfall_convert(args):
+            raise ImportError(_convert_unavailable)
+
+        parser_convert.description = _convert_unavailable
+    else:
+        _make_parser_scryfall_convert(parser_convert)
+    parser_convert.set_defaults(_run_fn_=_run_scryfall_convert, _run_msg_=f"{YLW}converting...{RST}")
 
     # run the specified subcommand!
     args = cli.parse_args()

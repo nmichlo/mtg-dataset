@@ -94,16 +94,17 @@ logic  by registering a new scrape function.
 from doorway.x import proxies_register_scraper
 from typing import List, Dict
 
-@proxies_register_scraper(name='my_proxy_source', is_default=True)
+
+@proxies_register_scraper(name="my_proxy_source", is_default=True)
 def custom_proxy_scraper(proxy_type: str) -> List[Dict[str, str]]:
     # you should respect this setting
-    assert proxy_type in ('all', 'http', 'https')
+    assert proxy_type in ("all", "http", "https")
     # proxies is a list of dictionaries, where each dictionary only has one entry:
     # - the key is the protocol
     # - the value is the matching full url
     return [
-        {'HTTP': 'http://<my-http-proxy>.com'},
-        {'HTTPS': 'https://<my-https-proxy>.com'},
+        {"HTTP": "http://<my-http-proxy>.com"},
+        {"HTTPS": "https://<my-https-proxy>.com"},
     ]
 ```
 
@@ -135,7 +136,7 @@ from mtgdata import generate_converted_dataset, ScryfallImageType, ScryfallBulkT
 generate_converted_dataset(
     out_img_type=ScryfallImageType.small,
     out_bulk_type=ScryfallBulkType.default_cards,
-    save_root='./data/converted/',
+    save_root="./data/converted/",
     out_obs_size_wh=(224, 160),
     convert_speed_test=True,
 )
@@ -152,8 +153,8 @@ from mtgdata import Hdf5Dataset
 
 # this h5py dataset supports pickling, and can be wrapped with a pytorch dataset.
 data = Hdf5Dataset(
-    h5_path='data/converted/mtg-default_cards-normal-60459x224x160x3.h5',  # name will differ
-    h5_dataset_name='data',
+    h5_path="data/converted/mtg-default_cards-normal-60459x224x160x3.h5",  # name will differ
+    h5_dataset_name="data",
     transform=None,
 )
 

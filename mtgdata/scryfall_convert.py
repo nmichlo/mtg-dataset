@@ -22,26 +22,22 @@
 #  SOFTWARE.
 #  ~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~
 
+import logging
 import os
 import warnings
-import logging
 from pathlib import Path
-from typing import Optional, TypeVar
-from typing import Tuple
 
 import h5py
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
-from mtgdata.scryfall import (
-    ScryfallBulkType,
-    ScryfallImageType,
-    ScryfallDataset,
-    ScryfallCardFace,
-)
+from mtgdata.scryfall import ScryfallBulkType
+from mtgdata.scryfall import ScryfallCardFace
+from mtgdata.scryfall import ScryfallDataset
+from mtgdata.scryfall import ScryfallImageType
+from mtgdata.scryfall import _cpu_count
 from mtgdata.util import Hdf5Dataset
-
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +47,12 @@ logger = logging.getLogger(__name__)
 # ========================================================================= #
 
 
-class PilResizeNumpyTransform(object):
+class PilResizeNumpyTransform:
     def __init__(
         self,
-        resize: Tuple[int, int] = None,
-        assert_shape: Tuple[int, int, int] | None = None,
-        assert_dtype: np.dtype | None = None,
+        resize: tuple[int, int] | None = None,
+        assert_shape: tuple[int, int, int] | None = None,
+        assert_dtype: np.dtype | type[np.generic] | None = None,
         transpose: bool = True,
         pad_to_square: bool = False,
     ):
@@ -66,44 +62,41 @@ class PilResizeNumpyTransform(object):
         self._transpose = transpose
         self._pad_to_square = pad_to_square
 
-    def __call__(self, img: "Image.Image"):
+    def __call__(self, img: "Image.Image") -> np.ndarray:
         # resize
         if self._resize is not None:
             if img.size != self._resize:
                 img = img.resize(self._resize)
-        # convert to numpy
-        img = np.asarray(img)
+        # convert to numpy -- `arr` is a separate name from `img` so the PIL
+        # image and the array it becomes never share one variable
+        arr = np.asarray(img)
         # check RGB
-        assert img.ndim == 3, f"expected 3 dimensions, got: {img.ndim}"
-        assert img.shape[-1] == 3, f"expected 3 channels, got: {img.shape[-1]}"
+        assert arr.ndim == 3, f"expected 3 dimensions, got: {arr.ndim}"
+        assert arr.shape[-1] == 3, f"expected 3 channels, got: {arr.shape[-1]}"
         # check shapes
         if self._assert_shape is not None:
-            assert img.shape == self._assert_shape, (
-                f"expected shape: {self._assert_shape}, got: {img.shape}"
-            )
+            assert arr.shape == self._assert_shape, f"expected shape: {self._assert_shape}, got: {arr.shape}"
         if self._assert_dtype is not None:
-            assert img.dtype == self._assert_dtype, (
-                f"expected dtype: {self._assert_dtype}, got: {img.dtype}"
-            )
+            assert arr.dtype == self._assert_dtype, f"expected dtype: {self._assert_dtype}, got: {arr.dtype}"
         # pad to a square
         if self._pad_to_square:
-            H, W, C = img.shape
+            H, W, C = arr.shape
             pad_h = (max(H, W) - H) / 2
             pad_w = (max(H, W) - W) / 2
-            img = np.pad(
-                img,
+            arr = np.pad(
+                arr,
                 [
                     (int(np.floor(pad_h)), int(np.ceil(pad_h))),
                     (int(np.floor(pad_w)), int(np.ceil(pad_w))),
                     (0, 0),
                 ],
             )
-            assert img.shape[0] == img.shape[1] == max(H, W)
+            assert arr.shape[0] == arr.shape[1] == max(H, W)
         # transpose
         if self._transpose:
-            img = np.moveaxis(img, -1, -3)
+            arr = np.moveaxis(arr, -1, -3)
         # return values
-        return img
+        return arr
 
 
 # ========================================================================= #
@@ -111,16 +104,13 @@ class PilResizeNumpyTransform(object):
 # ========================================================================= #
 
 
-T = TypeVar("T")
-
-
 def dataset_save_as_hdf5(
     dataset: ScryfallDataset,
     *,
-    obs_shape: Tuple[int, int, int],  # (H, W, C) usually
+    obs_shape: tuple[int, int, int],  # (H, W, C) usually
     save_path: Path | str,
     batch_size: int = 64,
-    num_workers: int = os.cpu_count(),
+    num_workers: int = _cpu_count(),
     overwrite: bool = False,
     compression_lvl: int = 4,
 ):
@@ -131,9 +121,7 @@ def dataset_save_as_hdf5(
     try:
         from torch.utils.data import DataLoader
     except ImportError:
-        raise ImportError(
-            "torch is not installed. Please install it via `pip install torch`"
-        )
+        raise ImportError("torch is not installed. Please install it via `pip install torch`")
 
     save_path = Path(save_path)
     # defaults & checks
@@ -142,9 +130,7 @@ def dataset_save_as_hdf5(
     # skip if exists
     if not overwrite:
         if os.path.exists(save_path):
-            logger.info(
-                f"dataset already exists and overwriting is not enabled, skipping: {repr(save_path)}"
-            )
+            logger.info(f"dataset already exists and overwriting is not enabled, skipping: {repr(save_path)}")
             return
     # open file
     with h5py.File(save_path, "w", libver="earliest") as f:
@@ -163,7 +149,10 @@ def dataset_save_as_hdf5(
         )
         # dataloader
         loader = DataLoader(
-            dataset,
+            # `ScryfallDataset` deliberately does not subclass `torch.utils.data.Dataset`,
+            # which would make torch a base dependency rather than a `[convert]` extra.
+            # `DataLoader` only needs `__getitem__` and `__len__`, both of which it has.
+            dataset,  # ty: ignore[invalid-argument-type]
             batch_size=batch_size,
             num_workers=num_workers,
             drop_last=False,
@@ -262,22 +251,21 @@ def generate_converted_dataset(
     out_img_type: ScryfallImageType = ScryfallImageType.border_crop,
     out_bulk_type: ScryfallBulkType = ScryfallBulkType.default_cards,
     out_obs_compression_lvl: int = 4,
-    out_obs_size_wh: Optional[
-        Tuple[int | None, int | None]
-    ] = None,  # (W, H) -- None is auto computed based on default size.
+    out_obs_size_wh: tuple[int | None, int | None]
+    | None = None,  # (W, H) -- None is auto computed based on default size.
     out_obs_channels_first: bool = False,
     out_obs_pad_to_square: bool = False,
     # save options
-    save_root: Optional[str | Path] = None,
+    save_root: str | Path | None = None,
     save_overwrite: bool = True,
     # image download settings
     imgs_force_update: bool = False,
-    imgs_download_threads: int = os.cpu_count() * 2,
+    imgs_download_threads: int = _cpu_count() * 2,
     # conversion settings
     convert_batch_size: int = 128,
-    convert_num_workers: int = os.cpu_count() // 2,
+    convert_num_workers: int = _cpu_count() // 2,
     convert_speed_test: bool = False,
-) -> Tuple[Path, Path]:
+) -> tuple[Path, Path]:
     if out_obs_size_wh is None:
         out_obs_size_wh = (None, None)
 
@@ -308,24 +296,16 @@ def generate_converted_dataset(
     )
 
     if height / width != 1.4:
-        warnings.warn(
-            f"Aspect ratio of height/width is not 1.4, given: {height}x{width} which gives {height / width}"
-        )
+        warnings.warn(f"Aspect ratio of height/width is not 1.4, given: {height}x{width} which gives {height / width}")
     if (out_bulk_type, out_img_type) not in SANE_MODES:
         warnings.warn(
             f"Current combination of bulk and image types might generate a lot of data: {(out_bulk_type, out_img_type)} consider instead one of: {sorted(SANE_MODES)}"
         )
     if (height > out_img_type.height) or (width > out_img_type.width):
-        warnings.warn(
-            f"images are being unscaled from input size of: {out_img_type.size} to: {(width, height)}"
-        )
+        warnings.warn(f"images are being unscaled from input size of: {out_img_type.size} to: {(width, height)}")
 
     # get the shape of the images in the dataset (without padding)
-    data_shape = (
-        (len(dataset), 3, height, width)
-        if out_obs_channels_first
-        else (len(dataset), height, width, 3)
-    )
+    data_shape = (len(dataset), 3, height, width) if out_obs_channels_first else (len(dataset), height, width, 3)
     data_shape_str = "x".join(str(d) for d in data_shape)
 
     # get the output observation shape (with padding)
@@ -340,22 +320,16 @@ def generate_converted_dataset(
     save_root = Path(save_root) if save_root else dataset.ds.ds_dir / "converted"
     save_root.mkdir(parents=True, exist_ok=True)
     bt, it = out_bulk_type.replace("_", "-"), out_img_type.replace("_", "-")
-    path_data = (
-        save_root
-        / f"mtg_{bt}-{dataset.ds.bulk_date}_{it}_{data_shape_str}_c{out_obs_compression_lvl}.h5"
-    )
+    path_data = save_root / f"mtg_{bt}-{dataset.ds.bulk_date}_{it}_{data_shape_str}_c{out_obs_compression_lvl}.h5"
     path_meta = (
-        save_root
-        / f"mtg_{bt}-{dataset.ds.bulk_date}_{it}_{data_shape_str}_c{out_obs_compression_lvl}_meta.json"
+        save_root / f"mtg_{bt}-{dataset.ds.bulk_date}_{it}_{data_shape_str}_c{out_obs_compression_lvl}_meta.json"
     )
 
     # check paths
     do_save = True
     if not save_overwrite:
         if os.path.exists(path_data) or os.path.exists(path_meta):
-            logger.warning(
-                f"converted dataset or meta files already exist: {repr(path_data)} or {repr(path_meta)}"
-            )
+            logger.warning(f"converted dataset or meta files already exist: {repr(path_data)} or {repr(path_meta)}")
             do_save = False
 
     # convert the dataset
@@ -399,9 +373,7 @@ def _make_parser_scryfall_convert(parser=None):
 
     _make_parser_scryfall_prepare(parser)
     # extra args
-    parser.add_argument(
-        "-o", "--out-root", type=str, default=None, help="output folder"
-    )
+    parser.add_argument("-o", "--out-root", type=str, default=None, help="output folder")
     parser.add_argument(
         "-s",
         "--size",
@@ -424,7 +396,7 @@ def _make_parser_scryfall_convert(parser=None):
     parser.add_argument(
         "--num-workers",
         type=int,
-        default=max(os.cpu_count() // 2, 1),
+        default=max(_cpu_count() // 2, 1),
         help="number of workers to use when processing the dataset",
     )
     parser.add_argument(
@@ -465,9 +437,7 @@ def _run_scryfall_convert(args):
         obs_size_wh = None
     else:
         try:
-            width, height = (
-                None if (v == "?") else int(v) for v in args.size.split("x")
-            )
+            width, height = (None if (v == "?") else int(v) for v in args.size.split("x"))
             obs_size_wh = (width, height)
         except Exception:
             raise ValueError(

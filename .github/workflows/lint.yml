@@ -1,8 +1,13 @@
+# runs `.pre-commit-config.yaml` verbatim, so `pre-commit run --all-files`
+# locally and CI can never disagree. tool config lives in `pyproject.toml`.
+
 name: lint
-on: [ pull_request ]
+
+on: [pull_request]
+
 jobs:
-  ruff:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/ruff-action@v3
+  pre-commit:
+    uses: nmichlo/.github/.github/workflows/pre-commit.yaml@main
+    with:
+      # the `ty` hook needs the project's dependencies resolvable
+      install-extras: "convert,raw,test"
