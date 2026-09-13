@@ -5,6 +5,11 @@ on:
   push:
     branches: [main]
 
+# least privilege: jobs that need more declare it themselves, and a job-level
+# `permissions:` replaces this one rather than adding to it.
+permissions:
+  contents: read
+
 jobs:
   # base deps only -- proves the package imports and works without the extras.
   # kept separate because under the full install these would always pass.
@@ -13,7 +18,10 @@ jobs:
     with:
       python-versions: '["3.12", "3.13"]'
       install-extras: "test"
-      pytest-args: "--color=yes --verbose -m 'not extra_test'"
+      pytest-args: "--color=yes --verbose"
+      # its own input: `pytest-args` is split on whitespace, so a quoted
+      # value here would arrive as three separate arguments.
+      markers: "not extra_test"
 
   extras:
     uses: nmichlo/.github/.github/workflows/pytest.yaml@main
@@ -21,3 +29,15 @@ jobs:
       python-versions: '["3.12", "3.13"]'
       install-extras: "convert,raw,test"
       pytest-args: "--color=yes --verbose"
+
+  # The branch-protection gate; see nmichlo/.github/actions/gate for why it
+  # exists. `always()` is required, or the gate is skipped when what it guards
+  # fails -- and a skipped required check counts as success.
+  test:
+    needs: [defaults, extras]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: nmichlo/.github/actions/gate@main
+        with:
+          needs: ${{ toJSON(needs) }}
